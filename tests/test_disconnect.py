@@ -18,6 +18,12 @@ def test_early_stream_disconnect_releases_reservation(disconnect_at):
             resets = 0
             calls = 0
 
+            async def start(self):
+                pass
+
+            async def close(self):
+                pass
+
             async def generate(self, model, prompt):
                 self.calls += 1
                 yield "fresh reply"

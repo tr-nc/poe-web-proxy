@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 import re
+import tempfile
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -40,7 +42,7 @@ class Browser:
         self.session = session
         self.timeout = timeout
 
-    async def command(self, *args: str) -> dict[str, Any]:
+    async def _run(self, *args: str) -> dict[str, Any]:
         process = await asyncio.create_subprocess_exec(
             "agent-browser",
             "--session",
@@ -63,8 +65,33 @@ class Browser:
             raise BrowserError("Invalid agent-browser response; run agent-browser doctor") from None
         if process.returncode or not result.get("success"):
             # Browser errors may contain page content or auth data. Do not forward them.
-            raise BrowserError("Browser command failed; inspect the dedicated browser window")
+            raise BrowserError("Browser command failed; stop the service and run login to inspect")
         return result.get("data", {})
+
+    async def command(self, *args: str) -> dict[str, Any]:
+        return await self._run("--restore", "--headed", "false", "--idle-timeout", "0", *args)
+
+    async def start(self) -> None:
+        # Capture the live session BEFORE changing launch flags. Legacy headed
+        # sessions may not have restore configured; relaunching first loses auth.
+        info = await self._run("session", "info")
+        state = None
+        try:
+            if info.get("active"):
+                fd, state = tempfile.mkstemp(prefix="poe-headless-", suffix=".json")
+                os.fchmod(fd, 0o600)
+                os.close(fd)
+                await self._run("state", "save", state)
+                await self._run("close")
+            flags = ("--state", state) if state else ()
+            await self.command(*flags, "open", "about:blank")
+        finally:
+            if state:
+                os.unlink(state)
+
+    async def close(self) -> None:
+        # --restore saves auth outside the repository for the next service start.
+        await self.command("close")
 
     async def state(self) -> dict:
         result = await self.command("eval", READ_MESSAGE)

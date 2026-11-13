@@ -39,6 +39,8 @@ class _OwnedStream(StreamingResponse):
 
 
 class Transport(Protocol):
+    async def start(self) -> None: ...
+    async def close(self) -> None: ...
     def generate(self, model: str, prompt: str) -> AsyncGenerator[str, None]: ...
     async def reset(self) -> None: ...
 
@@ -81,10 +83,16 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
 
     @asynccontextmanager
     async def lifespan(app):
-        yield
-        if cleanup_tasks:
-            await asyncio.gather(*cleanup_tasks)
-        await release()
+        try:
+            await transport.start()
+            yield
+        finally:
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks)
+            try:
+                await release()
+            finally:
+                await transport.close()
 
     app = FastAPI(title="Poe Web Proxy", lifespan=lifespan, docs_url=None, redoc_url=None)
 

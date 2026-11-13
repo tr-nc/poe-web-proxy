@@ -4,6 +4,7 @@ Requires `poe-web-proxy login` first. Starts and stops its own loopback server;
 never prints or persists its randomly generated local client key.
 """
 
+import json
 import os
 import secrets
 import socket
@@ -21,6 +22,7 @@ def main():
         port = sock.getsockname()[1]
     key = secrets.token_hex(32)
     env = {**os.environ, "POE_PROXY_API_KEY": key, "POE_PROXY_MODELS": "GPT-6.1-Sol"}
+    session = os.environ.get("POE_PROXY_LIVE_SESSION", "poe-web-proxy")
     server = subprocess.Popen(
         [
             sys.executable,
@@ -28,7 +30,7 @@ def main():
             "from poe_web_proxy.cli import main; main()",
             "serve",
             "--session",
-            os.environ.get("POE_PROXY_LIVE_SESSION", "poe-web-proxy"),
+            session,
             "--port",
             str(port),
         ],
@@ -46,7 +48,7 @@ def main():
         )
 
     try:
-        for _ in range(100):
+        for _ in range(300):
             if server.poll() is not None:
                 raise RuntimeError("Live server exited during startup")
             try:
@@ -59,6 +61,21 @@ def main():
         else:
             raise RuntimeError("Live server did not start")
         assert httpx.get(url + "/models").status_code == 401
+        mode = subprocess.run(
+            [
+                "agent-browser",
+                "--session",
+                session,
+                "--json",
+                "eval",
+                'navigator.userAgent.includes("HeadlessChrome")',
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert json.loads(mode.stdout)["data"]["result"] is True
+        print("PASS: service browser is headless", flush=True)
         marker = "POE_LIVE_" + secrets.token_hex(4)
         r = completion("Reply with exactly this string and nothing else: " + marker)
         assert r.choices[0].message.content.strip() == marker

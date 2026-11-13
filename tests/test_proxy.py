@@ -20,6 +20,14 @@ class Fake:
         self.reset_failure = reset_failure
         self.calls = []
         self.resets = 0
+        self.starts = 0
+        self.closes = 0
+
+    async def start(self):
+        self.starts += 1
+
+    async def close(self):
+        self.closes += 1
 
     async def generate(self, model, prompt) -> AsyncGenerator[str, None]:
         self.calls.append((model, prompt))

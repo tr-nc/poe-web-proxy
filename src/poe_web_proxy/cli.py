@@ -27,7 +27,7 @@ def login(
 ):
     """Open a dedicated browser; log in manually or import your own exported cookies."""
     Browser(session)  # Validate before passing session to the CLI.
-    args = ["agent-browser", "--session", session, "--headed"]
+    args = ["agent-browser", "--session", session, "--restore", "--headed", "true"]
     state = None
     try:
         if cookies:
@@ -67,7 +67,7 @@ def serve(
         float, typer.Option(min=1, help="Upstream generation deadline in seconds")
     ] = 120,
 ):
-    """Serve on loopback only. Requires POE_PROXY_API_KEY; never uses a Poe API key."""
+    """Run a headless browser and loopback API. Requires POE_PROXY_API_KEY."""
     key = os.environ.get("POE_PROXY_API_KEY", "")
     models = tuple(
         filter(

@@ -19,10 +19,16 @@ export POE_PROXY_API_KEY="$(openssl rand -hex 32)"
 uv run poe-web-proxy serve
 ```
 
-Keep the browser window open. Use a session dedicated to this service; do not
-navigate it manually while a request runs. To use a different session, pass
-`--session NAME` to both commands. If already running, log in manually rather
-than trying to replace its startup state.
+`login` opens a visible window only for authentication. `serve` captures any
+live session before switching it to **headless**, so no browser window needs to
+stay open. On service shutdown it saves the session and closes its browser;
+subsequent starts restore the saved login. An expired login still requires you
+to stop the service, run `login` again, and restart `serve`.
+
+Use a session dedicated to this service; do not run login or manipulate that
+session while the service runs. To use a different session, pass `--session NAME`
+to both commands. If already running, log in manually rather than trying to
+replace its startup state.
 
 Optional first-launch import of your own cookie export (array format):
 
@@ -30,9 +36,11 @@ Optional first-launch import of your own cookie export (array format):
 uv run poe-web-proxy login --cookies "$HOME/Downloads/poe.com_cookies.json"
 ```
 
-Cookie imports are restricted to poe.com. Temporary import state is mode 0600
-and removed immediately after browser startup. The browser retains credentials
-in its own session; cookie exports and browser data are still sensitive.
+Cookie imports are restricted to poe.com. Temporary import/migration state is
+mode 0600 and removed after browser startup. Persistent auth is managed by
+agent-browser's `--restore` facility, outside this repository. Those files,
+cookie exports, and browser data are sensitive. Headless idle shutdown is
+disabled while the service owns the session; stopping the service closes it.
 
 ```sh
 curl http://127.0.0.1:8765/v1/chat/completions \
@@ -63,7 +71,8 @@ The client key is a **local proxy secret**, not a Poe API key or session cookie.
   or a guarantee of access. Requires your own account's model permissions/points.
 - `--timeout` bounds generation (default 120 seconds). Cleanup can take up to
   another 40 seconds. `--port` changes the default 8765; binding stays loopback.
-- Poe DOM selectors are unversioned and can break. Inspect the dedicated browser
+- Poe DOM selectors are unversioned and can break; headless access can also be
+  challenged by the site. Stop the service and run `login` for visible diagnostics
   when errors occur; do not use this as a production or shared public gateway.
 - Cookie exports and HARs must stay outside Git. Do not submit credentials to
   third-party proxies. Respect Poe's terms, account restrictions and rate limits.
@@ -87,8 +96,8 @@ uv run python tests/live_smoke.py
 It starts and stops a temporary loopback server, uses the real OpenAI SDK to
 check exact non-stream output, streaming, overlapping-request rejection, and
 recovery after closing an active stream. Set `POE_PROXY_LIVE_SESSION` when using
-a non-default browser session. It leaves the dedicated browser open at a blank
-page and does not leave a proxy server running.
+a non-default browser session. It verifies headless mode and shuts down both its
+proxy server and browser. The saved login remains available for the next start.
 
 ## License
 
