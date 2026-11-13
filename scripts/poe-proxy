@@ -1,0 +1,22 @@
+#!/bin/sh
+# Resolve our installed symlink without relying on an interactive shell or cwd.
+set -eu
+script=$0
+while [ -L "$script" ]; do
+    base=$(CDPATH= cd -- "$(dirname -- "$script")" && pwd)
+    target=$(readlink "$script")
+    case "$target" in
+        /*) script=$target ;;
+        *) script=$base/$target ;;
+    esac
+done
+root=$(CDPATH= cd -- "$(dirname -- "$script")/.." && pwd)
+command="$root/.venv/bin/poe-web-proxy"
+if [ ! -x "$command" ]; then
+    printf 'Project environment missing. Run: cd "%s" && uv sync --frozen\n' "$root" >&2
+    exit 1
+fi
+if [ "$#" -eq 0 ]; then
+    set -- start
+fi
+exec "$command" service "$@"

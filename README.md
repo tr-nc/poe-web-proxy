@@ -53,6 +53,38 @@ Or use `OpenAI(api_key=os.environ["POE_PROXY_API_KEY"],
 base_url="http://127.0.0.1:8765/v1")` with `client.chat.completions.create(...)`.
 The client key is a **local proxy secret**, not a Poe API key or session cookie.
 
+## macOS login-time startup
+
+After login and `uv sync`, install the LaunchAgent once:
+
+```sh
+uv run poe-web-proxy service install
+~/.local/bin/poe-proxy status
+```
+
+Installation starts the service immediately and at subsequent **user logins**
+(not before login at boot). It installs `~/.local/bin/poe-proxy`; if that directory
+is on PATH, `poe-proxy` with no arguments starts the service. It does not require
+an interactive shell, zshrc, or a network package sync on startup.
+
+```sh
+poe-proxy start      # idempotent, preserves active requests
+poe-proxy stop       # stays stopped until manual start or the next login
+poe-proxy restart   # interrupts active requests
+poe-proxy status    # API readiness, logs and key path; never prints the key
+poe-proxy uninstall # remove autostart; retain credentials and logs
+```
+
+The persistent local client key is stored in
+`~/Library/Application Support/poe-web-proxy/api-key` (0600); it is not embedded
+in the plist. Clients must use this key rather than a newly generated one.
+Logs are under `~/Library/Logs/poe-web-proxy/`. Reinstalling preserves the key.
+The LaunchAgent captures the installed Python and agent-browser paths; rerun
+`service install` after moving the checkout or replacing the Node installation.
+A loaded/ready service does not prove Poe login or model access remains valid.
+For reauthentication, stop the service, run `uv run poe-web-proxy login`, then
+`poe-proxy start`. Do not run a manual `serve` alongside the managed service.
+
 ## Boundaries
 
 - One user text message per request; every request starts a fresh chat.

@@ -13,8 +13,10 @@ import uvicorn
 
 from .app import create_app
 from .browser import Browser
+from .launchd import cli as service_cli
 
 cli = typer.Typer(no_args_is_help=True)
+cli.add_typer(service_cli, name="service")
 DEFAULT_SESSION = "poe-web-proxy"
 
 
