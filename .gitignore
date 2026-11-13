@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.env
+.env.*
+*.har
+*cookies*.json
+*state*.json
+*.log
+dist/
+*.egg-info/
