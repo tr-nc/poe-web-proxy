@@ -64,8 +64,10 @@ def test_stop_unloads_only_our_agent(tmp_path, monkeypatch):
     monkeypatch.setattr("poe_web_proxy.launchd.time.sleep", lambda _: None)
     manager.stop()
     assert [c.args for c in manager.launchctl.call_args_list] == [
-        ("print", manager.target), ("bootout", manager.target),
-        ("print", manager.target), ("print", manager.target),
+        ("print", manager.target),
+        ("bootout", manager.target),
+        ("print", manager.target),
+        ("print", manager.target),
     ]
 
 

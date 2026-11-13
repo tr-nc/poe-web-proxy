@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import Receive, Scope, Send
 
+from .agent import AgentCompletion
 from .browser import BrowserError
 
 
@@ -48,7 +49,7 @@ class Transport(Protocol):
 class Message(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["user"]
-    content: str = Field(min_length=1, max_length=20000)
+    content: str = Field(min_length=1, max_length=200000)
 
 
 class Completion(BaseModel):
@@ -101,6 +102,13 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
+        if request.url.path.startswith("/v1/agent/"):
+            return error(
+                "Invalid agent request: text transcripts and JSON-schema function tools only; "
+                "token limits must be null",
+                400,
+                "invalid_request_error",
+            )
         return error(
             "Only one user text message, model, and stream are supported; "
             "tools, history, generation parameters, and extra fields are not supported",
@@ -109,6 +117,7 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
         )
 
     @app.get("/v1/models")
+    @app.get("/v1/agent/models")
     async def list_models(authorized: bool = Depends(auth)):
         if not authorized:
             return error("Invalid local API key", 401, "authentication_error")
@@ -204,5 +213,60 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
             return error(str(exc), 502, "upstream_error")
         finally:
             await cleanup()
+
+    @app.post("/v1/agent/chat/completions")
+    async def agent_complete(
+        body: AgentCompletion, request: Request, authorized: bool = Depends(auth)
+    ):
+        if not authorized:
+            return error("Invalid local API key", 401, "authentication_error")
+        try:
+            prompt = body.prompt()
+        except ValueError as exc:
+            return error(str(exc), 400, "invalid_request_error")
+        # Keep the same concurrency/cleanup owner as plain chat. Agent emulation
+        # buffers the whole envelope; no tool arguments escape before validation.
+        result = await complete(
+            Completion(
+                model=body.model, messages=[Message(role="user", content=prompt)], stream=False
+            ),
+            request,
+            authorized,
+        )
+        if not isinstance(result, dict):
+            return result
+        try:
+            message, finish = body.reply(result["choices"][0]["message"]["content"])
+        except BrowserError as exc:
+            return error(str(exc), 502, "upstream_error")
+        result["choices"][0].update(message=message, finish_reason=finish)
+        if not body.stream:
+            return result
+
+        async def events():
+            delta: dict[str, object] = {"role": "assistant"}
+            if message.get("content") is not None:
+                delta["content"] = message["content"]
+            if "tool_calls" in message:
+                delta["tool_calls"] = [
+                    {"index": i, **call} for i, call in enumerate(message["tool_calls"])
+                ]
+            for payload, reason in ((delta, None), ({}, finish)):
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "id": result["id"],
+                            "object": "chat.completion.chunk",
+                            "created": result["created"],
+                            "model": body.model,
+                            "choices": [{"index": 0, "delta": payload, "finish_reason": reason}],
+                        }
+                    )
+                    + "\n\n"
+                )
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     return app

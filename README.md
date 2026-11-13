@@ -85,7 +85,68 @@ A loaded/ready service does not prove Poe login or model access remains valid.
 For reauthentication, stop the service, run `uv run poe-web-proxy login`, then
 `poe-proxy start`. Do not run a manual `serve` alongside the managed service.
 
-## Boundaries
+## Experimental agent/Pi endpoint
+
+`/v1/agent/chat/completions` is separate from the plain chat endpoint. It accepts
+text system/developer/user/assistant/tool history and JSON-schema function tools.
+It serializes the transcript into a fresh web prompt: **roles and tool calls are
+prompt-based emulation, not native Poe/OpenAI tool support**. Replies are buffered
+until a complete JSON envelope is validated. Only a declared tool with valid
+arguments is forwarded, at most one per turn; the proxy never executes tools.
+The client (e.g. Pi) executes them under its own permissions. Treat this adapter
+as experimental, particularly for destructive or security-sensitive operations.
+
+Agent streaming emits the completed, validated answer/call as one SSE chunk, not
+incremental model tokens. It reports neither native reasoning nor token usage or
+billing. Numeric output-token caps and sampling parameters are rejected because
+the web UI cannot enforce them. The serialized prompt is limited to 200000
+characters; compact long transcripts. Image input is not supported.
+
+For Pi, add a provider to `~/.pi/agent/models.json` (merge with existing entries):
+
+```json
+{
+  "providers": {
+    "poe-web": {
+      "baseUrl": "http://127.0.0.1:8765/v1/agent",
+      "api": "openai-completions",
+      "apiKey": "!/bin/cat \"$HOME/Library/Application Support/poe-web-proxy/api-key\"",
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsUsageInStreaming": false,
+        "supportsStrictMode": false,
+        "promptCacheKeyMode": "disabled"
+      },
+      "models": [{
+        "id": "Claude-Opus-5.5",
+        "name": "Opus 5.5 via Poe (experimental tool emulation)",
+        "reasoning": false,
+        "input": ["text"],
+        "contextWindow": 32000,
+        "maxTokens": 4096,
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "samplingParams": {"max_completion_tokens": null, "max_tokens": null}
+      }]
+    }
+  }
+}
+```
+
+The context metadata is a conservative adapter setting, not a claim about the
+underlying model. Zero pricing means unreported cost, **not free Poe usage**.
+The null sampling fields disable Pi's otherwise-sent output token cap. Add
+`poe-web/Claude-Opus-5.5` to `enabledModels` in Pi's settings to include it in
+Scoped Models, then `/reload` and select it with `/model`. Do not change your
+normal default model just to configure this provider.
+
+```sh
+pi --provider poe-web --model Claude-Opus-5.5
+uv run python tests/live_pi_smoke.py # opt-in paid read-tool round trip
+```
+
+## Plain chat boundaries
 
 - One user text message per request; every request starts a fresh chat.
 - Real incremental DOM text is emitted as SSE deltas; not simulated tokenization.
@@ -98,7 +159,7 @@ For reauthentication, stop the service, run `uv run poe-web-proxy login`, then
   page before the next request; cleanup failures require a service restart.
   Disconnect/timeout cleanup does **not** guarantee Poe cancels server-side work
   or refunds points. Chats are not automatically deleted.
-- Default allowlist: `GPT-6.1-Sol`. Configure comma-separated bot handles with
+- Default allowlist: `GPT-6.1-Sol,Claude-Opus-5.5`. Configure comma-separated bot handles with
   `POE_PROXY_MODELS`. This list is operator configuration, not provider discovery
   or a guarantee of access. Requires your own account's model permissions/points.
 - `--timeout` bounds generation (default 120 seconds). Cleanup can take up to

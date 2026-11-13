@@ -18,6 +18,7 @@ from .launchd import cli as service_cli
 cli = typer.Typer(no_args_is_help=True)
 cli.add_typer(service_cli, name="service")
 DEFAULT_SESSION = "poe-web-proxy"
+DEFAULT_MODELS = "GPT-6.1-Sol,Claude-Opus-5.5"
 
 
 @cli.command()
@@ -73,7 +74,7 @@ def serve(
     key = os.environ.get("POE_PROXY_API_KEY", "")
     models = tuple(
         filter(
-            None, (s.strip() for s in os.environ.get("POE_PROXY_MODELS", "GPT-6.1-Sol").split(","))
+            None, (s.strip() for s in os.environ.get("POE_PROXY_MODELS", DEFAULT_MODELS).split(","))
         )
     )
     if not key:
