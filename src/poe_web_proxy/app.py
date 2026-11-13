@@ -15,8 +15,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import Receive, Scope, Send
 
-from .agent import AgentCompletion
+from .agent import AgentCompletion, ImagePart, Text
 from .browser import BrowserError
+from .images import checked_attachments
+from .sessions import AgentTurn, SessionConflict, SessionStore, session_id
+from .turn import BrowserTurn
 
 
 class _OwnedStream(StreamingResponse):
@@ -42,14 +45,16 @@ class _OwnedStream(StreamingResponse):
 class Transport(Protocol):
     async def start(self) -> None: ...
     async def close(self) -> None: ...
-    def generate(self, model: str, prompt: str) -> AsyncGenerator[str, None]: ...
+    def generate(
+        self, model: str, prompt: str, turn: BrowserTurn | None = None
+    ) -> AsyncGenerator[str, None]: ...
     async def reset(self) -> None: ...
 
 
 class Message(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["user"]
-    content: str = Field(min_length=1, max_length=200000)
+    content: str | list[Text | ImagePart] = Field(min_length=1, max_length=200000)
 
 
 class Completion(BaseModel):
@@ -65,7 +70,12 @@ def error(message: str, status: int, code: str) -> JSONResponse:
     )
 
 
-def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> FastAPI:
+def create_app(
+    transport: Transport,
+    api_key: str,
+    models: tuple[str, ...],
+    sessions: SessionStore | None = None,
+) -> FastAPI:
     if not api_key or not models:
         raise ValueError("A local API key and at least one model are required")
     busy = False
@@ -104,13 +114,13 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
     async def invalid_request(request, exc):
         if request.url.path.startswith("/v1/agent/"):
             return error(
-                "Invalid agent request: text transcripts and JSON-schema function tools only; "
+                "Invalid agent request: text/inline images and JSON-schema function tools only; "
                 "token limits must be null",
                 400,
                 "invalid_request_error",
             )
         return error(
-            "Only one user text message, model, and stream are supported; "
+            "Only one user message with text/inline images, model, and stream are supported; "
             "tools, history, generation parameters, and extra fields are not supported",
             400,
             "invalid_request_error",
@@ -128,6 +138,35 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
 
     @app.post("/v1/chat/completions")
     async def complete(body: Completion, request: Request, authorized: bool = Depends(auth)):
+        if not authorized:
+            return error("Invalid local API key", 401, "authentication_error")
+        content = body.messages[0].content
+        turn = None
+        if isinstance(content, list):
+            try:
+                images = checked_attachments(
+                    [part.image_url.attachment() for part in content if isinstance(part, ImagePart)]
+                )
+            except ValueError as exc:
+                return error(str(exc), 400, "invalid_request_error")
+            prompt = "\n".join(part.text for part in content if isinstance(part, Text))
+            if len(prompt) > 200000:
+                return error("Text exceeds 200000 characters", 400, "invalid_request_error")
+            body = Completion(
+                model=body.model,
+                stream=body.stream,
+                messages=[Message(role="user", content=prompt or "Describe the attached images.")],
+            )
+            turn = BrowserTurn(images=images) if images else None
+        return await respond(body, request, authorized, turn)
+
+    async def respond(
+        body: Completion,
+        request: Request,
+        authorized: bool,
+        turn: BrowserTurn | None = None,
+        reserve: Callable[[], None] | None = None,
+    ):
         nonlocal busy
         if not authorized:
             return error("Invalid local API key", 401, "authentication_error")
@@ -141,6 +180,15 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
                 "Browser is busy; retry after the current request", 429, "rate_limit_error"
             )
         busy = True
+        try:
+            if reserve:
+                reserve()
+        except SessionConflict as exc:
+            busy = False
+            return error(str(exc), 409, "session_conflict")
+        except BaseException:
+            busy = False
+            raise
         identifier = "chatcmpl-" + uuid.uuid4().hex
         created = int(time.time())
 
@@ -166,7 +214,13 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
                 await asyncio.shield(cleanup_task)
 
         def deltas():
-            return transport.generate(body.model, body.messages[0].content)
+            prompt = body.messages[0].content
+            assert isinstance(prompt, str)
+            return (
+                transport.generate(body.model, prompt, turn=turn)
+                if turn is not None
+                else transport.generate(body.model, prompt)
+            )
 
         if body.stream:
 
@@ -220,25 +274,34 @@ def create_app(transport: Transport, api_key: str, models: tuple[str, ...]) -> F
     ):
         if not authorized:
             return error("Invalid local API key", 401, "authentication_error")
+        plan = None
         try:
-            prompt = body.prompt()
+            plan = AgentTurn(body, session_id(request.headers), sessions)
+            # Reservation occurs only after the shared browser has been acquired.
+            result = await respond(
+                Completion(
+                    model=body.model,
+                    messages=[Message(role="user", content=plan.prompt)],
+                    stream=False,
+                ),
+                request,
+                authorized,
+                plan.browser if plan.key or plan.browser.images else None,
+                plan.reserve,
+            )
+            if not isinstance(result, dict):
+                return result
+            message, finish = body.reply(result["choices"][0]["message"]["content"])
+            plan.commit(message)
         except ValueError as exc:
             return error(str(exc), 400, "invalid_request_error")
-        # Keep the same concurrency/cleanup owner as plain chat. Agent emulation
-        # buffers the whole envelope; no tool arguments escape before validation.
-        result = await complete(
-            Completion(
-                model=body.model, messages=[Message(role="user", content=prompt)], stream=False
-            ),
-            request,
-            authorized,
-        )
-        if not isinstance(result, dict):
-            return result
-        try:
-            message, finish = body.reply(result["choices"][0]["message"]["content"])
+        except SessionConflict as exc:
+            return error(str(exc), 409, "session_conflict")
         except BrowserError as exc:
             return error(str(exc), 502, "upstream_error")
+        finally:
+            if plan:
+                plan.abort()
         result["choices"][0].update(message=message, finish_reason=finish)
         if not body.stream:
             return result

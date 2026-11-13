@@ -6,7 +6,10 @@ import os
 import re
 import tempfile
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
+
+from .turn import BrowserTurn
 
 
 class BrowserError(Exception):
@@ -25,6 +28,11 @@ READ_MESSAGE = r"""
     /^(Log in|Sign in|登录|登入)$/i.test(e.textContent.trim()));
   return {
     login,
+    url: location.href,
+    replyId: reply?.id ?? null,
+    attachments: document.querySelectorAll('[class*="ChatMessageInputAttachments_attachment__"]').length,
+    canSend: [...document.querySelectorAll('button')].some(e =>
+      /发送信息|Send message|^Send$/i.test(e.getAttribute('aria-label') ?? '') && !e.disabled),
     ready: !!input,
     count: messages.length,
     text: reply?.querySelector('[class*="Message_selectableText__"]')?.innerText ?? '',
@@ -107,35 +115,78 @@ class Browser:
         # This is not a promise that Poe will refund points or cancel server work.
         await self.command("open", "about:blank")
 
-    async def generate(self, model: str, prompt: str) -> AsyncGenerator[str, None]:
-        async with asyncio.timeout(self.timeout):
-            await self.command("open", f"https://poe.com/{model}")
-            for _ in range(40):
-                state = await self.state()
-                if state.get("login"):
-                    raise BrowserError("Poe login required; authenticate the dedicated browser")
-                if state.get("ready"):
-                    break
-                await asyncio.sleep(0.25)
-            else:
-                raise BrowserError("Poe composer unavailable; check login and model access")
-            if state.get("count"):
-                raise BrowserError("Expected a new chat; refusing to reuse existing history")
-            await self.command("fill", "textarea", prompt)
-            await self.command("press", "Enter")
-            previous = ""
-            while True:
-                state = await self.state()
-                if state.get("login"):
-                    raise BrowserError("Poe session expired")
-                text = state.get("text", "")
-                if not text.startswith(previous):
-                    raise BrowserError("Poe revised streamed text; cannot safely append deltas")
-                if text != previous:
-                    yield text[len(previous) :]
-                    previous = text
-                if state.get("hasReply") and state.get("complete"):
-                    if not previous:
-                        raise BrowserError("Poe returned an empty response")
-                    return
-                await asyncio.sleep(0.3)
+    async def generate(
+        self, model: str, prompt: str, turn: BrowserTurn | None = None
+    ) -> AsyncGenerator[str, None]:
+        turn = turn or BrowserTurn()
+        expected_url, baseline = turn.chat_url, turn.reply_id
+        with tempfile.TemporaryDirectory(prefix="poe-attachments-") as directory:
+            async with asyncio.timeout(self.timeout):
+                await self.command("open", expected_url or f"https://poe.com/{model}")
+                for _ in range(80):
+                    state = await self.state()
+                    if state.get("login"):
+                        raise BrowserError("Poe login required; authenticate the dedicated browser")
+                    if state.get("ready"):
+                        break
+                    await asyncio.sleep(0.25)
+                else:
+                    raise BrowserError("Poe composer unavailable; check login and model access")
+                if expected_url:
+                    if (
+                        state.get("url") != expected_url
+                        or state.get("replyId") != baseline
+                        or not state.get("complete")
+                    ):
+                        raise BrowserError(
+                            "Poe chat changed externally; refusing to send into divergent history"
+                        )
+                elif state.get("count"):
+                    raise BrowserError("Expected a new chat; refusing to reuse existing history")
+                await self.command("fill", "textarea", prompt)
+                if turn.images:
+                    paths = []
+                    for image in turn.images:
+                        path = Path(directory) / image.name
+                        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+                        with os.fdopen(fd, "wb") as file:
+                            file.write(image.data)
+                        paths.append(str(path))
+                    await self.command("upload", "input[type=file]", *paths)
+                    for _ in range(160):
+                        state = await self.state()
+                        if state.get("canSend") and state.get("attachments") == len(paths):
+                            break
+                        await asyncio.sleep(0.25)
+                    else:
+                        raise BrowserError(
+                            "Image upload did not become ready; message was not sent"
+                        )
+                # Set before invoking send: a command failure can still have sent it.
+                turn.submitted = True
+                await self.command("press", "Enter")
+                previous = ""
+                while True:
+                    state = await self.state()
+                    if state.get("login"):
+                        raise BrowserError("Poe session expired")
+                    url = state.get("url", "")
+                    if re.fullmatch(r"https://poe\.com/chat/[A-Za-z0-9_-]+", url):
+                        turn.chat_url = url
+                    # Reopening an existing chat exposes its previous completed reply.
+                    # Never return it as the response to the new message.
+                    if not state.get("hasReply") or (baseline and state.get("replyId") == baseline):
+                        await asyncio.sleep(0.3)
+                        continue
+                    text = state.get("text", "")
+                    if not text.startswith(previous):
+                        raise BrowserError("Poe revised streamed text; cannot safely append deltas")
+                    if text != previous:
+                        yield text[len(previous) :]
+                        previous = text
+                    if state.get("complete"):
+                        if not previous:
+                            raise BrowserError("Poe returned an empty response")
+                        turn.reply_id = state.get("replyId")
+                        return
+                    await asyncio.sleep(0.3)

@@ -49,7 +49,7 @@ class Fake:
     async def reset(self):
         pass
 
-    async def generate(self, model, prompt):
+    async def generate(self, model, prompt, turn=None):
         self.prompts.append(prompt)
         yield next(self.replies)
 

@@ -14,6 +14,7 @@ import uvicorn
 from .app import create_app
 from .browser import Browser
 from .launchd import cli as service_cli
+from .sessions import SessionStore
 
 cli = typer.Typer(no_args_is_help=True)
 cli.add_typer(service_cli, name="service")
@@ -83,7 +84,8 @@ def serve(
         not re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*", m) for m in models
     ):
         raise typer.BadParameter("POE_PROXY_MODELS must contain comma-separated Poe bot handles")
-    app = create_app(Browser(session, timeout), key, models)
+    store = SessionStore(Path.home() / "Library/Application Support/poe-web-proxy/chats.sqlite3")
+    app = create_app(Browser(session, timeout), key, models, sessions=store)
     uvicorn.run(app, host="127.0.0.1", port=port, access_log=False)
 
 

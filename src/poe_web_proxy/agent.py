@@ -9,6 +9,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .browser import BrowserError
+from .images import Attachment, ImageURL, checked_attachments
 
 
 class Strict(BaseModel):
@@ -18,6 +19,11 @@ class Strict(BaseModel):
 class Text(Strict):
     type: Literal["text"]
     text: str
+
+
+class ImagePart(Strict):
+    type: Literal["image_url"]
+    image_url: ImageURL
 
 
 class FunctionCall(Strict):
@@ -33,7 +39,7 @@ class ToolCall(Strict):
 
 class Message(Strict):
     role: Literal["system", "developer", "user", "assistant", "tool"]
-    content: str | list[Text] | None = None
+    content: str | list[Text | ImagePart] | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None
@@ -88,6 +94,10 @@ class AgentCompletion(Strict):
         pending = set()
         seen = set()
         for message in self.messages:
+            if isinstance(message.content, list):
+                for part in message.content:
+                    if isinstance(part, ImagePart):
+                        part.image_url.attachment()
             if message.role == "tool":
                 if message.tool_calls or message.tool_call_id not in pending:
                     raise ValueError("Tool result must reference a pending assistant tool call")
@@ -119,8 +129,45 @@ class AgentCompletion(Strict):
             raise ValueError("Required tool choice needs tool definitions")
         return self
 
-    def prompt(self) -> str:
-        transcript = [message.model_dump(exclude_none=True) for message in self.messages]
+    def canonical(self, messages: list[Message] | None = None) -> list[dict]:
+        transcript = []
+        for message in self.messages if messages is None else messages:
+            item = message.model_dump(exclude_none=True)
+            content = message.content
+            if isinstance(content, list):
+                parts = [
+                    (
+                        {"type": "text", "text": part.text}
+                        if isinstance(part, Text)
+                        else {"type": "image", "attachment": part.image_url.attachment().name}
+                    )
+                    for part in content
+                ]
+                item["content"] = (
+                    "\n".join(part["text"] for part in parts)
+                    if all(part["type"] == "text" for part in parts)
+                    else parts
+                )
+            elif content is None:
+                item["content"] = ""
+            if message.tool_calls:
+                for call in item["tool_calls"]:
+                    call["function"]["arguments"] = json.loads(call["function"]["arguments"])
+            transcript.append(item)
+        return transcript
+
+    def attachments(self, messages: list[Message] | None = None) -> tuple[Attachment, ...]:
+        return checked_attachments(
+            [
+                part.image_url.attachment()
+                for message in (self.messages if messages is None else messages)
+                for part in (message.content if isinstance(message.content, list) else [])
+                if isinstance(part, ImagePart)
+            ]
+        )
+
+    def prompt(self, messages: list[Message] | None = None, *, context: bool = True) -> str:
+        transcript = self.canonical(messages)
         tools = [tool.function.model_dump(exclude_none=True) for tool in self.tools]
         instructions = (
             "You are answering a client-side coding assistant transcript, transported as JSON. "
@@ -137,9 +184,19 @@ class AgentCompletion(Strict):
             "Make at most one tool call per turn. After receiving its result, continue the task. "
             f"Tool choice is {self.tool_choice}: 'none' forbids calls; 'required' requires a call.\n"
         )
-        prompt = instructions + json.dumps(
-            {"transcript": transcript, "tools": tools}, ensure_ascii=False
-        )
+        if context:
+            instructions += (
+                "Attached images are real uploads, referenced by their attachment filenames "
+                "in the transcript. Inspect the images rather than inferring them from text.\n"
+            )
+            payload = {"transcript": transcript, "tools": tools}
+        else:
+            instructions = (
+                "Continue the same client transcript. Use the previously declared tools and "
+                "JSON response protocol. Only new messages follow.\n"
+            )
+            payload = {"transcript": transcript, "tool_choice": self.tool_choice}
+        prompt = instructions + json.dumps(payload, ensure_ascii=False)
         if len(prompt) > 200000:
             raise ValueError(
                 "Serialized agent prompt exceeds 200000 characters; compact the conversation"

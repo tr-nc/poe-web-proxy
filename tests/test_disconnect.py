@@ -24,7 +24,7 @@ def test_early_stream_disconnect_releases_reservation(disconnect_at):
             async def close(self):
                 pass
 
-            async def generate(self, model, prompt):
+            async def generate(self, model, prompt, turn=None):
                 self.calls += 1
                 yield "fresh reply"
 

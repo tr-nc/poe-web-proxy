@@ -132,7 +132,7 @@ def test_service_owns_browser_lifetime():
         async def close(self):
             self.events.append("close")
 
-        async def generate(self, model, prompt):
+        async def generate(self, model, prompt, turn=None):
             yield "hello"
 
     fake = Fake()

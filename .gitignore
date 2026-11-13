@@ -5,6 +5,7 @@ __pycache__/
 .env
 .env.*
 *.har
+*.sqlite3*
 *cookies*.json
 *state*.json
 *.log

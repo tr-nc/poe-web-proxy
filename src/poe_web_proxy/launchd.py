@@ -162,7 +162,7 @@ class Service:
                 raise RuntimeError("LaunchAgent stop failed. Run: poe-proxy status")
             # bootout can return before the old job disappears from the domain.
             # Never let a following start kickstart that departing registration.
-            for _ in range(200):
+            for _ in range(900):
                 if not self.loaded():
                     return
                 time.sleep(0.1)

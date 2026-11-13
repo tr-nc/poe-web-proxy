@@ -29,7 +29,7 @@ class Fake:
     async def close(self):
         self.closes += 1
 
-    async def generate(self, model, prompt) -> AsyncGenerator[str, None]:
+    async def generate(self, model, prompt, turn=None) -> AsyncGenerator[str, None]:
         self.calls.append((model, prompt))
         if self.failure:
             raise self.failure
@@ -76,7 +76,6 @@ def test_stream_deltas_and_finish():
         {"max_tokens": 20},
         {"messages": [{"role": "system", "content": "secret"}]},
         {"messages": BODY["messages"] * 2},
-        {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]},
         {"messages": [{"role": "user", "content": ""}]},
     ],
 )
@@ -138,7 +137,7 @@ def test_concurrency_rejected_without_mixing_requests():
     finish = threading.Event()
 
     class Blocking(Fake):
-        async def generate(self, model, prompt):
+        async def generate(self, model, prompt, turn=None):
             entered.set()
             while not finish.is_set():
                 await asyncio.sleep(0.01)
@@ -207,7 +206,11 @@ def test_browser_sends_exact_prompt_and_streams_observed_text():
         [{"login": True}],
         [{"ready": True, "count": 2}],
         [{"ready": True, "count": 0}, {"text": "", "hasReply": True, "complete": True}],
-        [{"ready": True, "count": 0}, {"text": "abc"}, {"text": "xyz"}],
+        [
+            {"ready": True, "count": 0},
+            {"text": "abc", "hasReply": True},
+            {"text": "xyz", "hasReply": True},
+        ],
     ],
 )
 def test_browser_fails_closed(states):
