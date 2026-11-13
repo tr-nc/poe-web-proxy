@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .browser import BrowserError
 from .images import Attachment, ImageURL, checked_attachments
+from .turn import ReasoningEffort
 
 
 class Strict(BaseModel):
@@ -75,6 +76,7 @@ class AgentCompletion(Strict):
     stream: bool = False
     tools: list[Tool] = Field(default_factory=list, max_length=100)
     tool_choice: Literal["auto", "none", "required"] = "auto"
+    reasoning_effort: ReasoningEffort | None = None
     # Pi can explicitly disable its default token cap with samplingParams null.
     # Numeric token caps cannot be enforced through a web composer and are rejected.
     max_tokens: None = None

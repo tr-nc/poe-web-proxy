@@ -223,7 +223,11 @@ def test_browser_resume_ignores_previous_reply_and_cleans_image_files():
         async def state():
             return next(states)
 
+        async def configure_effort(effort):
+            assert effort == "medium"
+
         browser.command, browser.state = command, state
+        browser.configure_effort = configure_effort
         turn = BrowserTurn(
             chat_url=url, reply_id="message-old", images=(ImageURL(url=image_url()).attachment(),)
         )

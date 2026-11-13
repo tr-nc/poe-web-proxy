@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
-from .turn import BrowserTurn
+from .turn import BrowserTurn, ReasoningEffort
 
 
 class BrowserError(Exception):
@@ -24,6 +24,19 @@ READ_MESSAGE = r"""
   const replies = messages.filter(e => e.querySelector('[class*="Message_leftSideMessageBubble__"]'));
   const reply = replies.at(-1);
   const input = document.querySelector('textarea');
+  const selectable = reply?.querySelector('[class*="Message_selectableText__"]');
+  // Native thinking headers/content live inside the same selectable wrapper.
+  // Exclude those DOM subtrees, not matching strings in the user's answer.
+  // Restore styles synchronously before the browser can paint a frame.
+  const thinking = [...(selectable?.querySelectorAll('[class*="MarkdownThinkingBlock_root__"]') ?? [])];
+  const styles = thinking.map(e => e.getAttribute('style'));
+  let text = '';
+  try {
+    thinking.forEach(e => e.style.setProperty('display', 'none', 'important'));
+    text = selectable?.innerText ?? '';
+  } finally {
+    thinking.forEach((e, i) => styles[i] === null ? e.removeAttribute('style') : e.setAttribute('style', styles[i]));
+  }
   const login = [...document.querySelectorAll('a,button')].some(e =>
     /^(Log in|Sign in|登录|登入)$/i.test(e.textContent.trim()));
   return {
@@ -35,9 +48,27 @@ READ_MESSAGE = r"""
       /发送信息|Send message|^Send$/i.test(e.getAttribute('aria-label') ?? '') && !e.disabled),
     ready: !!input,
     count: messages.length,
-    text: reply?.querySelector('[class*="Message_selectableText__"]')?.innerText ?? '',
+    text,
     complete: reply?.getAttribute('data-complete') === 'true',
     hasReply: !!reply
+  };
+})()
+"""
+
+
+EFFORT_SELECT = (
+    'select:has(option[value="low"]):has(option[value="medium"]):has(option[value="high"])'
+)
+READ_EFFORT = """
+(() => {
+  const button = document.querySelector('button[data-button-custom-ui="true"]');
+  const selects = [...document.querySelectorAll('select')].filter(e =>
+    ['low', 'medium', 'high'].every(v => [...e.options].some(o => o.value === v)));
+  const select = selects.length === 1 ? selects[0] : null;
+  return {
+    button: !!button, open: button?.getAttribute('aria-expanded') === 'true',
+    options: select ? [...select.options].map(o => o.value) : [],
+    value: select?.value ?? null
   };
 })()
 """
@@ -101,14 +132,39 @@ class Browser:
         # --restore saves auth outside the repository for the next service start.
         await self.command("close")
 
-    async def state(self) -> dict:
-        result = await self.command("eval", READ_MESSAGE)
+    async def evaluate(self, script: str) -> dict:
+        result = await self.command("eval", script)
         value = result.get("result", result)
         if isinstance(value, str):
             value = json.loads(value)
         if not isinstance(value, dict):
             raise BrowserError("Poe page structure changed")
         return value
+
+    async def state(self) -> dict:
+        return await self.evaluate(READ_MESSAGE)
+
+    async def configure_effort(self, effort: ReasoningEffort) -> None:
+        # The data attribute and native select were observed in Poe's custom
+        # inputs UI. Read-back is mandatory; never pretend a prompt sets effort.
+        button = 'button[data-button-custom-ui="true"]'
+        for _ in range(40):
+            state = await self.evaluate(READ_EFFORT)
+            if state.get("options"):
+                break
+            if state.get("button") and not state.get("open"):
+                await self.command("click", button)
+            await asyncio.sleep(0.25)
+        else:
+            raise BrowserError("Poe effort control unavailable; message was not sent")
+        if effort not in state["options"]:
+            raise BrowserError("Poe does not support the requested effort; message was not sent")
+        await self.command("select", EFFORT_SELECT, effort)
+        state = await self.evaluate(READ_EFFORT)
+        if state.get("value") != effort:
+            raise BrowserError("Poe effort setting was not acknowledged; message was not sent")
+        if state.get("open"):
+            await self.command("click", button)
 
     async def reset(self):
         # Leaving the page also stops reading/generating into the next request.
@@ -143,6 +199,13 @@ class Browser:
                         )
                 elif state.get("count"):
                     raise BrowserError("Expected a new chat; refusing to reuse existing history")
+                # Poe remembers custom inputs: explicitly restore Opus's observed
+                # Medium default when omitted, so another session's Max cannot leak.
+                effort = turn.reasoning_effort
+                if effort is None and model == "Claude-Opus-5.5":
+                    effort = "medium"
+                if effort is not None:
+                    await self.configure_effort(effort)
                 await self.command("fill", "textarea", prompt)
                 if turn.images:
                     paths = []

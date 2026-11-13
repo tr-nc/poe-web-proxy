@@ -116,6 +116,7 @@ class AgentTurn:
             chat_url=self.old["chat_url"] if self.old else None,
             reply_id=self.old["reply_id"] if self.old else None,
             images=body.attachments(messages),
+            reasoning_effort=body.reasoning_effort,
         )
         self.pending = None
         self.finished = False

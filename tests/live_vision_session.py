@@ -45,7 +45,7 @@ def main():
                 "--model",
                 "Claude-Opus-5.5",
                 "--thinking",
-                "off",
+                "medium",
                 "--print",
                 prompt,
             ]

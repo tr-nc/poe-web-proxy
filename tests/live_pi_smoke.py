@@ -34,7 +34,7 @@ def main():
             "--model",
             "Claude-Opus-5.5",
             "--thinking",
-            "off",
+            "medium",
             "--mode",
             "json",
             "--print",

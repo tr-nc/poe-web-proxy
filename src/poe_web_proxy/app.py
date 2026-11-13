@@ -19,7 +19,7 @@ from .agent import AgentCompletion, ImagePart, Text
 from .browser import BrowserError
 from .images import checked_attachments
 from .sessions import AgentTurn, SessionConflict, SessionStore, session_id
-from .turn import BrowserTurn
+from .turn import BrowserTurn, ReasoningEffort
 
 
 class _OwnedStream(StreamingResponse):
@@ -62,6 +62,7 @@ class Completion(BaseModel):
     model: str
     messages: list[Message] = Field(min_length=1, max_length=1)
     stream: bool = False
+    reasoning_effort: ReasoningEffort | None = None
 
 
 def error(message: str, status: int, code: str) -> JSONResponse:
@@ -115,13 +116,14 @@ def create_app(
         if request.url.path.startswith("/v1/agent/"):
             return error(
                 "Invalid agent request: text/inline images and JSON-schema function tools only; "
-                "token limits must be null",
+                "reasoning_effort must be low/medium/high/xhigh/max; token limits must be null",
                 400,
                 "invalid_request_error",
             )
         return error(
             "Only one user message with text/inline images, model, and stream are supported; "
-            "tools, history, generation parameters, and extra fields are not supported",
+            "reasoning_effort may be low/medium/high/xhigh/max; "
+            "tools, history, other generation parameters, and extra fields are not supported",
             400,
             "invalid_request_error",
         )
@@ -155,9 +157,13 @@ def create_app(
             body = Completion(
                 model=body.model,
                 stream=body.stream,
+                reasoning_effort=body.reasoning_effort,
                 messages=[Message(role="user", content=prompt or "Describe the attached images.")],
             )
             turn = BrowserTurn(images=images) if images else None
+        if body.reasoning_effort is not None:
+            turn = turn or BrowserTurn()
+            turn.reasoning_effort = body.reasoning_effort
         return await respond(body, request, authorized, turn)
 
     async def respond(
@@ -286,7 +292,9 @@ def create_app(
                 ),
                 request,
                 authorized,
-                plan.browser if plan.key or plan.browser.images else None,
+                plan.browser
+                if plan.key or plan.browser.images or plan.browser.reasoning_effort is not None
+                else None,
                 plan.reserve,
             )
             if not isinstance(result, dict):

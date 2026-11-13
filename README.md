@@ -96,6 +96,17 @@ arguments is forwarded, at most one per turn; the proxy never executes tools.
 The client (e.g. Pi) executes them under its own permissions. Treat this adapter
 as experimental, particularly for destructive or security-sensitive operations.
 
+Both chat endpoints accept `reasoning_effort`: `low`, `medium`, `high`, `xhigh`,
+or `max`. The browser sets and verifies Poe's native **Effort** dropdown before
+sending; it is not a text instruction to "think harder". For Opus 5.5, omitted
+effort is explicitly reset to the observed Medium default, preventing a previous
+session's custom setting from leaking. Other models must expose a compatible
+control or explicit effort fails before send. Off and Minimal are unsupported.
+Changing effort preserves the same session/chat and does not replay history.
+In Pi, use `/thinking` (or its normal thinking shortcut) after selecting this
+model; save Medium in `modelThinkingLevels` to replace any old Off selection.
+This controls computation effort, not a streamed reasoning/thinking transcript.
+
 Agent streaming emits the completed, validated answer/call as one SSE chunk, not
 incremental model tokens. It reports neither native reasoning nor token usage or
 billing. Numeric output-token caps and sampling parameters are rejected because
@@ -139,7 +150,7 @@ For Pi, add a provider to `~/.pi/agent/models.json` (merge with existing entries
       "compat": {
         "supportsStore": false,
         "supportsDeveloperRole": false,
-        "supportsReasoningEffort": false,
+        "supportsReasoningEffort": true,
         "supportsUsageInStreaming": false,
         "supportsStrictMode": false,
         "sendSessionAffinityHeaders": true,
@@ -149,7 +160,12 @@ For Pi, add a provider to `~/.pi/agent/models.json` (merge with existing entries
       "models": [{
         "id": "Claude-Opus-5.5",
         "name": "Opus 5.5 via Poe (experimental tool emulation)",
-        "reasoning": false,
+        "reasoning": true,
+        "thinkingLevelMap": {
+          "off": null, "minimal": null,
+          "low": "low", "medium": "medium", "high": "high",
+          "xhigh": "xhigh", "max": "max"
+        },
         "input": ["text", "image"],
         "contextWindow": 1000000,
         "maxTokens": 128000,
@@ -177,6 +193,7 @@ normal default model just to configure this provider.
 ```sh
 pi --provider poe-web --model Claude-Opus-5.5
 uv run python tests/live_pi_smoke.py # opt-in paid read-tool round trip
+uv run python tests/live_effort_smoke.py # opt-in paid five-level native effort check
 ```
 
 ## Plain chat boundaries
@@ -188,7 +205,7 @@ uv run python tests/live_pi_smoke.py # opt-in paid read-tool round trip
   than silently corrupting the output. Stream errors are SSE error objects,
   without a false success finish or `[DONE]`.
 - No tools, system messages, history, non-image attachments, Responses API, token accounting,
-  or generation parameters. Unsupported fields are rejected, not silently ignored.
+  or generation parameters other than `reasoning_effort`. Unsupported fields are rejected, not silently ignored.
 - One in-flight request per browser; others receive 429. Cleanup leaves the chat
   page before the next request; cleanup failures require a service restart.
   Disconnect/timeout cleanup does **not** guarantee Poe cancels server-side work
