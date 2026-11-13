@@ -151,8 +151,8 @@ For Pi, add a provider to `~/.pi/agent/models.json` (merge with existing entries
         "name": "Opus 5.5 via Poe (experimental tool emulation)",
         "reasoning": false,
         "input": ["text", "image"],
-        "contextWindow": 32000,
-        "maxTokens": 4096,
+        "contextWindow": 1000000,
+        "maxTokens": 128000,
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "samplingParams": {"max_completion_tokens": null, "max_tokens": null}
       }]
@@ -161,8 +161,14 @@ For Pi, add a provider to `~/.pi/agent/models.json` (merge with existing entries
 }
 ```
 
-The context metadata is a conservative adapter setting, not a claim about the
-underlying model. Zero pricing means unreported cost, **not free Poe usage**.
+The 1M context and 128K output metadata follow [Anthropic's Opus 5.5 model
+specifications](https://platform.claude.com/docs/en/models/opus-5-5/overview),
+not an end-to-end validation of Poe's effective window or output limit. Poe may
+apply its own limits or truncate history; this adapter cannot detect all such
+behavior. The 200000-character cap applies to each serialized web prompt (new
+messages plus any context update), not cumulative chat history; initial history
+and the 300-message request limit still apply. Zero pricing means unreported
+cost, **not free Poe usage**.
 The null sampling fields disable Pi's otherwise-sent output token cap. Add
 `poe-web/Claude-Opus-5.5` to `enabledModels` in Pi's settings to include it in
 Scoped Models, then `/reload` and select it with `/model`. Do not change your
