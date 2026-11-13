@@ -160,6 +160,13 @@ class Service:
             result = self.launchctl("bootout", self.target)
             if result.returncode:
                 raise RuntimeError("LaunchAgent stop failed. Run: poe-proxy status")
+            # bootout can return before the old job disappears from the domain.
+            # Never let a following start kickstart that departing registration.
+            for _ in range(200):
+                if not self.loaded():
+                    return
+                time.sleep(0.1)
+            raise RuntimeError("LaunchAgent is still unloading; retry poe-proxy status")
 
     def status(self):
         result = self.launchctl("print", self.target)

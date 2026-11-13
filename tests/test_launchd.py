@@ -57,10 +57,16 @@ def test_stop_unloads_only_our_agent(tmp_path, monkeypatch):
         side_effect=[
             subprocess.CompletedProcess([], 0, "", ""),
             subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, "", ""),  # old registration still unloading
+            subprocess.CompletedProcess([], 1, "", ""),
         ]
     )
+    monkeypatch.setattr("poe_web_proxy.launchd.time.sleep", lambda _: None)
     manager.stop()
-    assert manager.launchctl.call_args_list[-1].args == ("bootout", manager.target)
+    assert [c.args for c in manager.launchctl.call_args_list] == [
+        ("print", manager.target), ("bootout", manager.target),
+        ("print", manager.target), ("print", manager.target),
+    ]
 
 
 def test_start_is_idempotent_and_never_force_kills(tmp_path, monkeypatch):
