@@ -1,6 +1,7 @@
 """Explicit, buffered tool emulation for clients such as Pi. Never execute tools here."""
 
 import json
+import re
 import uuid
 from typing import Literal
 
@@ -178,6 +179,9 @@ class AgentCompletion(Strict):
             "You cannot access the client's files yourself. To use a declared client tool, "
             "request it in the JSON response below; the client will execute it and send its result. "
             "Do NOT pretend you executed tools. Do NOT use Poe's own tools in place of client tools. "
+        )
+        response_contract = (
+            "\nResponse protocol for your NEXT reply (not part of the transcript): "
             "Return exactly ONE JSON object inside one fenced ```json code block, "
             "with no text outside the block. The code block is required to preserve JSON "
             "escapes and tool code through the web page\'s Markdown renderer. "
@@ -197,20 +201,32 @@ class AgentCompletion(Strict):
         else:
             instructions = (
                 "Continue the same client transcript. Use the previously declared tools and "
-                "JSON response protocol. Return one JSON object inside one fenced ```json "
-                "code block, with no text outside the block; this preserves tool code verbatim. "
-                "Only new messages follow.\n"
+                "JSON response protocol. Only new messages follow.\n"
             )
             payload = {"transcript": transcript, "tool_choice": self.tool_choice}
-        prompt = instructions + json.dumps(payload, ensure_ascii=False)
+        # Repeat the complete envelope after new tool results on EVERY turn. A weak
+        # reference to an earlier protocol drifts back into ordinary web-chat prose.
+        prompt = instructions + json.dumps(payload, ensure_ascii=False) + response_contract
         if len(prompt) > 200000:
             raise ValueError(
                 "Serialized agent prompt exceeds 200000 characters; compact the conversation"
             )
         return prompt
 
-    def reply(self, text: str) -> tuple[dict, str]:
+    def reply(self, text: str, *, plain_text: bool = False) -> tuple[dict, str]:
         try:
+            if plain_text:
+                # Prose is inert final output, never a source of executable calls.
+                # Do not hide damaged/ambiguous envelopes as successful answers.
+                stripped = text.lstrip()
+                if (
+                    not stripped
+                    or self.tool_choice == "required"
+                    or stripped.startswith(("{", "[", "```"))
+                    or re.search(r'"(?:type|calls)"\s*:', text)
+                ):
+                    raise ValueError
+                return {"role": "assistant", "content": text}, "stop"
             reply = json.loads(text)
             if not isinstance(reply, dict):
                 raise TypeError

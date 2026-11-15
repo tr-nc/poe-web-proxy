@@ -297,7 +297,9 @@ def create_app(
             )
             if not isinstance(result, dict):
                 return result
-            message, finish = body.reply(result["choices"][0]["message"]["content"])
+            message, finish = body.reply(
+                result["choices"][0]["message"]["content"], plain_text=plan.browser.plain_text
+            )
             plan.commit(message)
         except ValueError as exc:
             return error(str(exc), 400, "invalid_request_error")

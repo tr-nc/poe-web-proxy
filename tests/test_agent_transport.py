@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from poe_web_proxy.agent import AgentCompletion
 from poe_web_proxy.app import create_app
 from poe_web_proxy.browser import Browser
+from poe_web_proxy.sessions import SessionStore, digest
 from poe_web_proxy.turn import BrowserTurn
 
 MODEL = "Claude-Opus-5.5"
@@ -41,9 +42,10 @@ BODY = {
 
 
 class RenderedBrowser(Browser):
-    def __init__(self, source):
+    def __init__(self, source, text='json\n{"type":"tool_calls","calls": broken}'):
         super().__init__("agent-transport-test")
         self.source = source
+        self.text = text
         self.turns = []
 
     async def start(self):
@@ -63,14 +65,21 @@ class RenderedBrowser(Browser):
         self.turns.append(turn)
         self.states = iter(
             [
-                {"ready": True, "count": 0},
+                {
+                    "ready": True,
+                    "count": 0,
+                    "url": turn.chat_url,
+                    "replyId": turn.reply_id,
+                    "complete": True,
+                },
                 {"hasReply": True, "text": "partial rendered text", "complete": False},
                 {
                     "hasReply": True,
-                    "text": 'json\n{"broken": "quotes"inside"}',
+                    "text": self.text,
                     "agentText": self.source,
                     "complete": True,
-                    "replyId": "message-123",
+                    "replyId": f"message-{len(self.turns)}",
+                    "url": "https://poe.com/chat/test-format",
                 },
             ]
         )
@@ -108,6 +117,76 @@ def test_missing_or_invalid_code_envelope_is_not_forwarded(source):
     assert "no tool call was forwarded" in response.json()["error"]["message"]
 
 
+@pytest.mark.parametrize("tool_choice", ["auto", "none"])
+def test_plain_final_answer_keeps_bound_session_usable(tmp_path, tool_choice):
+    answer = "描边有两类：外轮廓和内部棱线。\n先做方案 A。你计划支持网页版吗？"
+    browser = RenderedBrowser(None, answer)
+    store = SessionStore(tmp_path / "chats.sqlite3")
+    headers = {"Authorization": "Bearer test-key", "x-session-affinity": "plain-final"}
+    body = {**BODY, "tool_choice": tool_choice}
+    with TestClient(create_app(browser, "test-key", (MODEL,), store)) as client:
+        first = client.post("/v1/agent/chat/completions", headers=headers, json=body)
+        assert first.status_code == 200, first.text
+        message = first.json()["choices"][0]["message"]
+        assert message == {"role": "assistant", "content": answer}
+        record = store.get(digest("plain-final"))
+        assert record and record["status"] == "ready"
+        second = client.post(
+            "/v1/agent/chat/completions",
+            headers=headers,
+            json={
+                **body,
+                "messages": [*body["messages"], message, {"role": "user", "content": "选 A"}],
+            },
+        )
+        assert second.status_code == 200, second.text
+        assert len(browser.turns) == 2
+        assert browser.turns[1].chat_url == record["chat_url"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"type":"tool_calls","calls": broken}',
+        'Here is a call: {"type":"tool_calls","calls": broken}',
+        'json\n{"type":"text","text":"broken"quotes"}',
+        '[{"name":"read","arguments":{}}]',
+    ],
+)
+def test_damaged_protocol_never_falls_back_to_plain_answer(text):
+    with TestClient(create_app(RenderedBrowser(None, text), "test-key", (MODEL,))) as client:
+        response = client.post(
+            "/v1/agent/chat/completions",
+            headers={"Authorization": "Bearer test-key"},
+            json=BODY,
+        )
+        assert response.status_code == 502
+
+
+def test_damaged_protocol_still_blocks_duplicate_send(tmp_path):
+    browser = RenderedBrowser(None, '{"type":"tool_calls","calls": broken}')
+    store = SessionStore(tmp_path / "chats.sqlite3")
+    headers = {"Authorization": "Bearer test-key", "x-session-affinity": "bad-protocol"}
+    with TestClient(create_app(browser, "test-key", (MODEL,), store)) as client:
+        first = client.post("/v1/agent/chat/completions", headers=headers, json=BODY)
+        assert first.status_code == 502
+        retry = client.post("/v1/agent/chat/completions", headers=headers, json=BODY)
+        assert retry.status_code == 409
+        assert len(browser.turns) == 1
+        record = store.get(digest("bad-protocol"))
+        assert record and record["status"] == "uncertain"
+
+
+def test_required_tool_choice_rejects_plain_answer():
+    with TestClient(create_app(RenderedBrowser(None, "A natural answer"), "test-key", (MODEL,))) as client:
+        response = client.post(
+            "/v1/agent/chat/completions",
+            headers={"Authorization": "Bearer test-key"},
+            json={**BODY, "tool_choice": "required"},
+        )
+        assert response.status_code == 502
+
+
 def test_structured_flag_defaults_to_plain_chat():
     assert not BrowserTurn().structured
 
@@ -117,6 +196,12 @@ def test_initial_and_continued_prompts_require_lossless_code_block(context):
     prompt = AgentCompletion.model_validate(BODY).prompt(context=context)
     assert "fenced ```json" in prompt
     assert "no text outside the block" in prompt
+    contract = prompt[prompt.rindex("Response protocol for your NEXT reply") :]
+    assert prompt.rindex("Response protocol for your NEXT reply") > prompt.index('"transcript"')
+    assert '"type":"text"' in contract
+    assert '"type":"tool_calls"' in contract
+    assert '"arguments"' in contract
+    assert "at most one tool call" in contract
 
 
 @pytest.mark.skipif(

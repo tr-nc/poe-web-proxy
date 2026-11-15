@@ -262,6 +262,12 @@ class Browser:
                             await asyncio.sleep(0.3)
                             continue
                         source = state.get("agentText")
+                        if source is None:
+                            # Natural final answers need no machine envelope. The
+                            # agent layer alone decides whether this is safe prose;
+                            # rendered text is NEVER parsed as executable calls.
+                            turn.plain_text = True
+                            source = state.get("text")
                         if not isinstance(source, str) or not source.strip():
                             raise BrowserError(
                                 "Expected one JSON code block; no tool call was forwarded"

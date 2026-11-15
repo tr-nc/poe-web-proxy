@@ -16,3 +16,4 @@ class BrowserTurn:
     submitted: bool = False
     reasoning_effort: ReasoningEffort | None = None
     structured: bool = False
+    plain_text: bool = False

@@ -156,9 +156,12 @@ For reauthentication, stop the service, run `uv run poe-web-proxy login`, then
 `/v1/agent/chat/completions` is separate from the plain chat endpoint. It accepts
 system/developer/user/assistant/tool history, inline images, and JSON-schema
 function tools. **Roles and tool calls are prompt-based emulation, not native
-Poe/OpenAI tool support**. Replies are buffered
-until a complete JSON envelope is validated. Only a declared tool with valid
-arguments is forwarded, at most one per turn; the proxy never executes tools.
+Poe/OpenAI tool support**. Replies are buffered. Tool envelopes must arrive in
+one JSON code block and pass tool-name/argument validation; rendered Markdown
+is never interpreted as executable calls. Ordinary prose may be returned as an
+inert final answer unless a tool is required. Damaged or ambiguous protocol
+output still fails closed. Only a declared tool with valid arguments is
+forwarded, at most one per turn; the proxy never executes tools.
 The client (e.g. Pi) executes them under its own permissions. Treat this adapter
 as experimental, particularly for destructive or security-sensitive operations.
 
