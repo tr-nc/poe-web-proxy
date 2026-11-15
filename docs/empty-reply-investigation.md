@@ -96,6 +96,36 @@ the reasoning-only termination. The root cause of the latter remains unconfirmed
 without provider stop-reason evidence. No automatic replay, fallback answer, or
 Thinking-to-answer conversion is justified by this finding.
 
+### Deployment and original session recovery
+
+The URL-serialization fix is `ccc726d`. After confirming the service-owned page
+was blank and not generating, backed up bindings privately and restarted the local
+systemd service at 2026-11-16 00:59:27 CST to load the latest code. API readiness
+passed. No live generation was interrupted.
+
+Pi's SessionManager and provider serialization reproduced the exact failing
+request: history hashes, context hash, and request digest matched the binding.
+Submitting that identical request to the updated service performed read-only
+recovery and durably recorded terminal failure, preserving its chat and input
+cursor. No prompt, attachment, or tool result was sent again.
+
+A new explicit tools-forbidden recovery-verification user message then returned
+HTTP 200 with a real final body in the same chat. The answer acknowledged the
+existing results and described remaining validation work; it did not execute it.
+Both the verification input and actual assistant answer were appended to the
+original Pi session via SessionManager. Every byte of its prior history remains
+an unchanged prefix; errors and tool execution records were not removed. A final
+Pi-provider serialization plus a next-turn dry-run passed the binding's normal
+history-prefix check and contained no attachments to replay. The binding is ready.
+An already-open Pi process must reload/resume this specific session to pick up the
+appended entries before sending another prompt.
+
+Follow-up total: three controlled new generations (two URL A/B probes and one
+original-session verification), zero client tools executed. Private backups and
+captured requests stay outside Git. This demonstrates recovery and prevention of
+new automatic page attachments; it does not retroactively remove the old pages
+from Poe history or prove the provider's final-omission cause is fixed.
+
 ## Remaining investigation and recovery constraints
 
 To claim a clean fix for upstream omissions, obtain a reproducible provider-level

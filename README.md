@@ -191,7 +191,9 @@ the turn. Remote URLs and local file paths are not fetched by the proxy.
 Enable session affinity in the provider below. The adapter binds each Pi session
 to one Poe chat and model, and appends only new user/tool/assistant messages.
 Unchanged history and image attachments are not resent. System/tool-definition
-changes are sent as explicit context updates. The binding survives proxy and
+changes are sent as explicit context updates. URL punctuation in serialized JSON
+strings is escaped without changing decoded content, preventing Poe from silently
+fetching reference URLs inside tool results as additional web-page attachments. The binding survives proxy and
 Pi restarts. Other OpenAI clients can use `x-session-affinity`, `session_id`, or
 `x-session-id` (values must agree). Without a header, requests remain stateless.
 
