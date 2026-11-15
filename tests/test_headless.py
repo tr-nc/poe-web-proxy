@@ -18,7 +18,8 @@ def test_start_preserves_existing_session_before_switching_mode(active):
         calls = []
         saved = []
 
-        async def command(*args):
+        async def command(*args, input_text=None):
+            assert input_text is None
             calls.append(args)
             if args == ("session", "info"):
                 return {"active": active}
@@ -51,7 +52,8 @@ def test_switch_failure_cleans_private_state():
         browser = Browser("dedicated-test")
         saved = []
 
-        async def command(*args):
+        async def command(*args, input_text=None):
+            assert input_text is None
             if args == ("session", "info"):
                 return {"active": True}
             if args[:2] == ("state", "save"):

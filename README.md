@@ -297,7 +297,7 @@ uv run pytest
 uv run ruff check .
 uv run pyright
 # Optional local Chromium DOM/JSON regression checks; no Poe account or points:
-POE_PROXY_BROWSER_TESTS=1 uv run pytest tests/test_agent_transport.py
+POE_PROXY_BROWSER_TESTS=1 uv run pytest tests/test_agent_transport.py tests/test_browser_input.py
 ```
 
 Tests exercise the HTTP contract with a fake transport and the browser adapter

@@ -97,18 +97,29 @@ class Browser:
         self.session = session
         self.timeout = timeout
 
-    async def _run(self, *args: str) -> dict[str, Any]:
-        process = await asyncio.create_subprocess_exec(
-            "agent-browser",
-            "--session",
-            self.session,
-            "--json",
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+    async def _run(self, *args: str, input_text: str | None = None) -> dict[str, Any]:
         try:
-            out, _ = await asyncio.wait_for(process.communicate(), timeout=35)
+            process = await asyncio.create_subprocess_exec(
+                "agent-browser",
+                "--session",
+                self.session,
+                "--json",
+                *args,
+                stdin=asyncio.subprocess.PIPE
+                if input_text is not None
+                else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError:
+            raise BrowserError(
+                "Unable to start browser command; check agent-browser installation"
+            ) from None
+        try:
+            out, _ = await asyncio.wait_for(
+                process.communicate(input_text.encode() if input_text is not None else None),
+                timeout=35,
+            )
         except BaseException:
             if process.returncode is None:
                 process.kill()
@@ -124,7 +135,27 @@ class Browser:
         return result.get("data", {})
 
     async def command(self, *args: str) -> dict[str, Any]:
-        return await self._run("--restore", "--headed", "false", "--idle-timeout", "0", *args)
+        flags = ("--restore", "--headed", "false", "--idle-timeout", "0")
+        if len(args) == 3 and args[:2] == ("fill", "textarea"):
+            # Linux caps a SINGLE argv string near 128 KiB, below our prompt limit.
+            # Stream all composer data through stdin, never argv or temporary files.
+            # Use the native setter so React's controlled-input tracker sees the change.
+            script = f"""
+(() => {{
+  const inputs = document.querySelectorAll('textarea');
+  if (inputs.length !== 1) throw new Error('Expected one composer');
+  const input = inputs[0];
+  if (input.disabled || input.readOnly) throw new Error('Composer is not editable');
+  const text = {json.dumps(args[2], ensure_ascii=False)};
+  input.focus();
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, text);
+  input.dispatchEvent(new Event('input', {{bubbles: true}}));
+  if (input.value !== text) throw new Error('Composer did not retain exact input');
+  return {{filled: true}};
+}})()
+"""
+            return await self._run(*flags, "eval", "--stdin", input_text=script)
+        return await self._run(*flags, *args)
 
     async def start(self) -> None:
         # Capture the live session BEFORE changing launch flags. Legacy headed
