@@ -161,7 +161,11 @@ def test_unspecified_opus_effort_resets_to_medium_instead_of_inheriting_max():
         browser = Browser("test")
         efforts = []
         states = iter(
-            [{"ready": True, "count": 0}, {"hasReply": True, "complete": True, "text": "ok"}]
+            [
+                {"ready": True, "count": 0},
+                {"hasReply": True, "complete": True, "text": "ok"},
+                {"hasReply": True, "complete": True, "text": "ok"},
+            ]
         )
 
         async def command(*args):

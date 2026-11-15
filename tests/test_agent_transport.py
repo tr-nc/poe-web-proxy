@@ -46,6 +46,7 @@ class RenderedBrowser(Browser):
         super().__init__("agent-transport-test")
         self.source = source
         self.text = text
+        self.last_state = {}
         self.turns = []
 
     async def start(self):
@@ -87,7 +88,8 @@ class RenderedBrowser(Browser):
             yield delta
 
     async def state(self):
-        return next(self.states)
+        self.last_state = next(self.states, self.last_state)
+        return self.last_state
 
 
 def test_stateless_agent_forwards_exact_code_not_rendered_text():
@@ -105,7 +107,7 @@ def test_stateless_agent_forwards_exact_code_not_rendered_text():
     assert browser.turns[0].structured
 
 
-@pytest.mark.parametrize("source", [None, "", "   ", '{"type":"tool_calls","calls":[]}'])
+@pytest.mark.parametrize("source", [None, "[]", "not JSON", '{"type":"tool_calls","calls":[]}'])
 def test_missing_or_invalid_code_envelope_is_not_forwarded(source):
     with TestClient(create_app(RenderedBrowser(source), "test-key", (MODEL,))) as client:
         response = client.post(
@@ -178,7 +180,9 @@ def test_damaged_protocol_still_blocks_duplicate_send(tmp_path):
 
 
 def test_required_tool_choice_rejects_plain_answer():
-    with TestClient(create_app(RenderedBrowser(None, "A natural answer"), "test-key", (MODEL,))) as client:
+    with TestClient(
+        create_app(RenderedBrowser(None, "A natural answer"), "test-key", (MODEL,))
+    ) as client:
         response = client.post(
             "/v1/agent/chat/completions",
             headers={"Authorization": "Bearer test-key"},
@@ -213,7 +217,7 @@ def test_real_dom_preserves_agent_code_and_rejects_ambiguous_blocks(tmp_path):
         '<div class="MarkdownCodeBlock_container__fixture">'
         '<div>json</div><pre><code class="language-json">'
         + html.escape(ENVELOPE)
-        + '</code></pre><button>Copy</button></div>'
+        + "</code></pre><button>Copy</button></div>"
     )
     thinking = '<div class="MarkdownThinkingBlock_root__fixture">Private thinking</div>'
     fixtures = [

@@ -167,6 +167,7 @@ class ScriptedBrowser(Browser):
     def __init__(self, states):
         super().__init__("test")
         self.states = iter(states)
+        self.last_state = {}
         self.commands = []
 
     async def command(self, *args):
@@ -174,7 +175,8 @@ class ScriptedBrowser(Browser):
         return {}
 
     async def state(self):
-        return next(self.states)
+        self.last_state = next(self.states, self.last_state)
+        return self.last_state
 
 
 def collect(browser):
@@ -205,7 +207,6 @@ def test_browser_sends_exact_prompt_and_streams_observed_text():
     [
         [{"login": True}],
         [{"ready": True, "count": 2}],
-        [{"ready": True, "count": 0}, {"text": "", "hasReply": True, "complete": True}],
         [
             {"ready": True, "count": 0},
             {"text": "abc", "hasReply": True},

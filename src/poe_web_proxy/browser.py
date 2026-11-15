@@ -56,6 +56,9 @@ READ_MESSAGE = r"""
     /^(Log in|Sign in|登录|登入)$/i.test(e.textContent.trim()));
   return {
     login,
+    generating: [...document.querySelectorAll('button')].some(e =>
+      /^(Stop message|Stop generating|停止生成|停止回答)$/i.test(e.getAttribute('aria-label') ?? '') && !e.disabled),
+    thinking: thinking.length > 0,
     url: location.href,
     replyId: reply?.id ?? null,
     attachments: document.querySelectorAll('[class*="ChatMessageInputAttachments_attachment__"]').length,
@@ -276,6 +279,7 @@ class Browser:
                 turn.submitted = True
                 await self.command("press", "Enter")
                 previous = ""
+                terminal = None
                 while True:
                     state = await self.state()
                     if state.get("login"):
@@ -288,8 +292,23 @@ class Browser:
                     if not state.get("hasReply") or (baseline and state.get("replyId") == baseline):
                         await asyncio.sleep(0.3)
                         continue
+                    source = state.get("agentText") if turn.structured else state.get("text")
+                    if source is None:
+                        source = state.get("text", "")
+                    candidate = (
+                        (state.get("replyId"), source)
+                        if state.get("complete")
+                        and not state.get("generating")
+                        and isinstance(source, str)
+                        and source.strip()
+                        else None
+                    )
+                    settled = candidate is not None and candidate == terminal
+                    terminal = candidate
+                    # data-complete is also true during Thinking and while Stop
+                    # is present. Empty output is not a malformed envelope.
                     if turn.structured:
-                        if not state.get("complete"):
+                        if not settled:
                             await asyncio.sleep(0.3)
                             continue
                         source = state.get("agentText")
@@ -304,6 +323,7 @@ class Browser:
                                 "Expected one JSON code block; no tool call was forwarded"
                             )
                         turn.reply_id = state.get("replyId")
+                        turn.reply_received = True
                         yield source
                         return
                     text = state.get("text", "")
@@ -312,9 +332,8 @@ class Browser:
                     if text != previous:
                         yield text[len(previous) :]
                         previous = text
-                    if state.get("complete"):
-                        if not previous:
-                            raise BrowserError("Poe returned an empty response")
+                    if settled:
                         turn.reply_id = state.get("replyId")
+                        turn.reply_received = True
                         return
                     await asyncio.sleep(0.3)

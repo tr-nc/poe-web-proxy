@@ -208,6 +208,13 @@ def test_browser_resume_ignores_previous_reply_and_cleans_image_files():
                     "complete": True,
                     "text": "new answer",
                 },
+                {
+                    "hasReply": True,
+                    "url": url,
+                    "replyId": "message-new",
+                    "complete": True,
+                    "text": "new answer",
+                },
             ]
         )
         browser = Browser("test")
