@@ -36,6 +36,10 @@ class Fake:
             turn.submitted = True
             turn.chat_url = "https://poe.com/chat/effort-test"
             turn.reply_id = "message-" + str(len(self.calls))
+            turn.response_id = turn.reply_id
+            turn.user_id = "message-user-" + str(len(self.calls))
+            turn.user_hash = digest(prompt)
+            turn.checkpoint()
         yield json.dumps({"type": "text", "text": "answer"})
 
 

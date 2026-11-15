@@ -198,11 +198,21 @@ Pi restarts. Other OpenAI clients can use `x-session-affinity`, `session_id`, or
 Bindings live in `~/Library/Application Support/poe-web-proxy/chats.sqlite3`
 on macOS, or the Linux data directory described above (0600): hashed session IDs, chat URLs, reply IDs, and transcript/context hashes;
 not full transcripts or image bytes. Do not edit the bound Poe chat manually.
-An externally changed chat, model switch, branched/compacted transcript, or
-unacknowledged send fails closed rather than silently creating another chat or
-replaying messages. Start a **new Pi session** after compaction/divergence or an
-ambiguous sent request. An error before send can be retried safely. Automatic
-retries after an ambiguous send are deliberately blocked to avoid double charges.
+An externally changed chat, model switch, or branched/compacted transcript fails
+closed rather than silently replaying history. Start a **new Pi session** after
+compaction/divergence. An error before send can be retried safely. After a sent
+request fails, an **identical request** can only re-read its original chat: the
+proxy verifies the request marker, user-message identity/hash and reply identity,
+then validates the completed output again. It never re-sends the prompt, images,
+or tools. Response-delivery retries preserve tool-call IDs. Older bindings without
+this evidence remain blocked rather than being guessed safe.
+
+Generation is not complete merely because Poe sets `data-complete`: the Stop
+control must be absent and nonempty output must settle across observations.
+Thinking-only output keeps waiting, not failing JSON validation. A timed-out
+bound request retains its browser page; other requests receive 429 until that
+exact request is recovered. Operator shutdown/restart still closes the browser;
+read recovery survives the restart only if Poe retained a completed reply.
 
 Chat reuse does not prove prompt-cache hits or discounted billing. Poe usage and
 cache accounting are still not exposed by this adapter.
@@ -262,6 +272,7 @@ normal default model just to configure this provider.
 ```sh
 pi --provider poe-web --model Claude-Opus-5.5
 uv run python tests/live_pi_smoke.py # opt-in paid read-tool round trip
+uv run python tests/live_recovery_smoke.py # paid four-turn long-history/recovery test; restarts systemd
 uv run python tests/live_effort_smoke.py # opt-in paid five-level native effort check
 ```
 

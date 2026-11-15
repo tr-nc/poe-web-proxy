@@ -70,8 +70,15 @@ def main():
             if block.get("type") == "text"
         )
         if result.returncode or "read" not in executions or answer.strip() != marker:
+            details = {
+                "exit_code": result.returncode,
+                "executed_tools": executions,
+                "errors": [
+                    reply.get("errorMessage") for reply in replies if reply.get("errorMessage")
+                ],
+            }
             raise RuntimeError(
-                "Pi tool round trip failed; check poe-proxy status and provider setup"
+                "Pi tool round trip failed: " + json.dumps(details, ensure_ascii=False)
             )
         print("PASS: real Pi -> Opus 5.5 -> read -> tool result -> exact final answer")
     finally:

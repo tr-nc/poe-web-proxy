@@ -184,7 +184,7 @@ class AgentCompletion(Strict):
             "\nResponse protocol for your NEXT reply (not part of the transcript): "
             "Return exactly ONE JSON object inside one fenced ```json code block, "
             "with no text outside the block. The code block is required to preserve JSON "
-            "escapes and tool code through the web page\'s Markdown renderer. "
+            "escapes and tool code through the web page's Markdown renderer. "
             'For a final answer use {"type":"text","text":"your answer"}. '
             'For tool use use {"type":"tool_calls","calls":[{"name":"declared_name",'
             '"arguments":{"parameter":"value"}}]}. '

@@ -19,12 +19,17 @@ class BrowserError(Exception):
 # These selectors and data-complete were observed in the current Poe DOM, not
 # copied from a reverse-engineered library. Fail closed when the contract changes.
 READ_MESSAGE = r"""
-(() => {
+(async () => {
   const messages = [...document.querySelectorAll('[id^="message-"][data-complete]')];
   const replies = messages.filter(e => e.querySelector('[class*="Message_leftSideMessageBubble__"]'));
   const reply = replies.at(-1);
   const input = document.querySelector('textarea');
   const selectable = reply?.querySelector('[class*="Message_selectableText__"]');
+  const user = messages.filter(e => e.querySelector('[class*="Message_rightSideMessageBubble__"]')).at(-1);
+  const userText = user?.querySelector('[class*="Message_selectableText__"]')?.textContent ?? '';
+  const userHash = user ? [...new Uint8Array(await crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(userText)))].map(b => b.toString(16).padStart(2, '0')).join('') : null;
+  const marker = userText.match(/POE-PROXY-REQUEST:([a-f0-9]{64})\s*$/);
   // Native thinking headers/content live inside the same selectable wrapper.
   // Exclude those DOM subtrees, not matching strings in the user's answer.
   // Restore styles synchronously before the browser can paint a frame.
@@ -56,6 +61,10 @@ READ_MESSAGE = r"""
     /^(Log in|Sign in|登录|登入)$/i.test(e.textContent.trim()));
   return {
     login,
+    userId: user?.id ?? null,
+    userHash,
+    requestMarker: marker?.[1] ?? null,
+    replyAfterUser: !!user && !!reply && messages.indexOf(reply) > messages.indexOf(user),
     generating: [...document.querySelectorAll('button')].some(e =>
       /^(Stop message|Stop generating|停止生成|停止回答)$/i.test(e.getAttribute('aria-label') ?? '') && !e.disabled),
     thinking: thinking.length > 0,
@@ -221,82 +230,139 @@ class Browser:
         # This is not a promise that Poe will refund points or cancel server work.
         await self.command("open", "about:blank")
 
+    @staticmethod
+    def _matches_user(state: dict, turn: BrowserTurn) -> bool:
+        if not turn.request_key:
+            return True
+        if not state.get("userId"):
+            return False
+        if turn.marker_required and state.get("requestMarker") != turn.request_key:
+            return False
+        if turn.user_id and state["userId"] != turn.user_id:
+            return False
+        if turn.user_hash and state.get("userHash") != turn.user_hash:
+            return False
+        return bool(turn.user_id or state["userId"] != turn.base_user_id)
+
+    async def _prepare(self, model: str, prompt: str, turn: BrowserTurn, directory: str):
+        expected_url, baseline = turn.chat_url, turn.reply_id
+        if turn.recovering and not expected_url:
+            raise BrowserError("Cannot locate the original Poe send; refusing to send again")
+        await self.command("open", expected_url or f"https://poe.com/{model}")
+        for _ in range(80):
+            state = await self.state()
+            if state.get("login"):
+                raise BrowserError("Poe login required; authenticate the dedicated browser")
+            if state.get("ready") and (not turn.recovering or self._matches_user(state, turn)):
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise BrowserError(
+                "Poe composer or original request identity unavailable; nothing was sent"
+            )
+        if turn.recovering:
+            # This path cannot configure, upload, fill, press Enter, or create a chat.
+            if state.get("url") != expected_url:
+                raise BrowserError("Poe chat changed during read-only recovery")
+            return
+        if expected_url:
+            if (
+                state.get("url") != expected_url
+                or state.get("replyId") != baseline
+                or not state.get("complete")
+                or state.get("generating")
+            ):
+                raise BrowserError(
+                    "Poe chat changed externally; refusing to send into divergent history"
+                )
+        elif state.get("count"):
+            raise BrowserError("Expected a new chat; refusing to reuse existing history")
+        turn.base_user_id = state.get("userId")
+        effort = turn.reasoning_effort
+        if effort is None and model == "Claude-Opus-5.5":
+            effort = "medium"
+        if effort is not None:
+            await self.configure_effort(effort)
+        await self.command("fill", "textarea", prompt)
+        if turn.images:
+            paths = []
+            for image in turn.images:
+                path = Path(directory) / image.name
+                fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as file:
+                    file.write(image.data)
+                paths.append(str(path))
+            await self.command("upload", "input[type=file]", *paths)
+            for _ in range(160):
+                state = await self.state()
+                if state.get("canSend") and state.get("attachments") == len(paths):
+                    break
+                await asyncio.sleep(0.25)
+            else:
+                raise BrowserError("Image upload did not become ready; message was not sent")
+        # Persist the possibility of a send BEFORE invoking Enter, including process crashes.
+        turn.submitted = True
+        turn.checkpoint()
+        await self.command("press", "Enter")
+
     async def generate(
         self, model: str, prompt: str, turn: BrowserTurn | None = None
     ) -> AsyncGenerator[str, None]:
         turn = turn or BrowserTurn()
-        expected_url, baseline = turn.chat_url, turn.reply_id
+        baseline = turn.reply_id
         with tempfile.TemporaryDirectory(prefix="poe-attachments-") as directory:
             async with asyncio.timeout(self.timeout):
-                await self.command("open", expected_url or f"https://poe.com/{model}")
-                for _ in range(80):
-                    state = await self.state()
-                    if state.get("login"):
-                        raise BrowserError("Poe login required; authenticate the dedicated browser")
-                    if state.get("ready"):
-                        break
-                    await asyncio.sleep(0.25)
-                else:
-                    raise BrowserError("Poe composer unavailable; check login and model access")
-                if expected_url:
-                    if (
-                        state.get("url") != expected_url
-                        or state.get("replyId") != baseline
-                        or not state.get("complete")
-                    ):
-                        raise BrowserError(
-                            "Poe chat changed externally; refusing to send into divergent history"
-                        )
-                elif state.get("count"):
-                    raise BrowserError("Expected a new chat; refusing to reuse existing history")
-                # Poe remembers custom inputs: explicitly restore Opus's observed
-                # Medium default when omitted, so another session's Max cannot leak.
-                effort = turn.reasoning_effort
-                if effort is None and model == "Claude-Opus-5.5":
-                    effort = "medium"
-                if effort is not None:
-                    await self.configure_effort(effort)
-                await self.command("fill", "textarea", prompt)
-                if turn.images:
-                    paths = []
-                    for image in turn.images:
-                        path = Path(directory) / image.name
-                        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-                        with os.fdopen(fd, "wb") as file:
-                            file.write(image.data)
-                        paths.append(str(path))
-                    await self.command("upload", "input[type=file]", *paths)
-                    for _ in range(160):
-                        state = await self.state()
-                        if state.get("canSend") and state.get("attachments") == len(paths):
-                            break
-                        await asyncio.sleep(0.25)
-                    else:
-                        raise BrowserError(
-                            "Image upload did not become ready; message was not sent"
-                        )
-                # Set before invoking send: a command failure can still have sent it.
-                turn.submitted = True
-                await self.command("press", "Enter")
+                await self._prepare(model, prompt, turn, directory)
                 previous = ""
                 terminal = None
+                identity = None
                 while True:
                     state = await self.state()
                     if state.get("login"):
                         raise BrowserError("Poe session expired")
-                    url = state.get("url", "")
-                    if re.fullmatch(r"https://poe\.com/chat/[A-Za-z0-9_-]+", url):
-                        turn.chat_url = url
-                    # Reopening an existing chat exposes its previous completed reply.
-                    # Never return it as the response to the new message.
-                    if not state.get("hasReply") or (baseline and state.get("replyId") == baseline):
+                    if not self._matches_user(state, turn):
+                        if turn.user_id:
+                            raise BrowserError("Poe request changed; refusing another turn's reply")
                         await asyncio.sleep(0.3)
                         continue
+                    url = state.get("url", "")
+                    valid_url = bool(re.fullmatch(r"https://poe\.com/chat/[A-Za-z0-9_-]+", url))
+                    if turn.request_key and not valid_url:
+                        await asyncio.sleep(0.3)
+                        continue
+                    if valid_url:
+                        turn.chat_url = url
+                    turn.checkpoint()
+                    if (
+                        not state.get("hasReply")
+                        or (baseline and state.get("replyId") == baseline)
+                        or (turn.request_key and not state.get("replyAfterUser"))
+                    ):
+                        await asyncio.sleep(0.3)
+                        continue
+                    observed = state.get("replyId")
+                    if turn.request_key and not turn.user_id:
+                        # Poe first mounts optimistic user/reply IDs, then replaces
+                        # them with server IDs. Journal only a stable pair in a real
+                        # chat, not the temporary client-side message identity.
+                        current_identity = (state.get("userId"), state.get("userHash"), observed)
+                        if current_identity != identity:
+                            identity = current_identity
+                            await asyncio.sleep(0.3)
+                            continue
+                        turn.user_id = state.get("userId")
+                        turn.user_hash = state.get("userHash")
+                    if turn.response_id and observed != turn.response_id:
+                        raise BrowserError(
+                            "Poe reply changed during recovery; refusing a different response"
+                        )
+                    turn.response_id = observed
+                    turn.checkpoint()
                     source = state.get("agentText") if turn.structured else state.get("text")
                     if source is None:
                         source = state.get("text", "")
                     candidate = (
-                        (state.get("replyId"), source)
+                        (observed, source)
                         if state.get("complete")
                         and not state.get("generating")
                         and isinstance(source, str)
@@ -305,24 +371,12 @@ class Browser:
                     )
                     settled = candidate is not None and candidate == terminal
                     terminal = candidate
-                    # data-complete is also true during Thinking and while Stop
-                    # is present. Empty output is not a malformed envelope.
                     if turn.structured:
                         if not settled:
                             await asyncio.sleep(0.3)
                             continue
-                        source = state.get("agentText")
-                        if source is None:
-                            # Natural final answers need no machine envelope. The
-                            # agent layer alone decides whether this is safe prose;
-                            # rendered text is NEVER parsed as executable calls.
-                            turn.plain_text = True
-                            source = state.get("text")
-                        if not isinstance(source, str) or not source.strip():
-                            raise BrowserError(
-                                "Expected one JSON code block; no tool call was forwarded"
-                            )
-                        turn.reply_id = state.get("replyId")
+                        turn.plain_text = state.get("agentText") is None
+                        turn.reply_id = observed
                         turn.reply_received = True
                         yield source
                         return
@@ -333,7 +387,7 @@ class Browser:
                         yield text[len(previous) :]
                         previous = text
                     if settled:
-                        turn.reply_id = state.get("replyId")
+                        turn.reply_id = observed
                         turn.reply_received = True
                         return
                     await asyncio.sleep(0.3)

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from poe_web_proxy.browser import Browser
+from poe_web_proxy.browser import Browser, BrowserError
 from poe_web_proxy.turn import BrowserTurn
 
 
@@ -82,6 +82,82 @@ def test_empty_thinking_only_reply_waits_instead_of_reporting_bad_json(monkeypat
     with pytest.raises(TimeoutError):
         collect(browser, turn)
     assert turn.submitted
+
+
+def test_optimistic_message_ids_are_not_persisted_as_send_identity(monkeypatch):
+    original_sleep = asyncio.sleep
+
+    async def tick(_):
+        await original_sleep(0)
+
+    monkeypatch.setattr("poe_web_proxy.browser.asyncio.sleep", tick)
+    marker = "a" * 64
+    stable = final(
+        userId="message-user-server",
+        userHash="server-hash",
+        requestMarker=marker,
+        replyAfterUser=True,
+    )
+    browser = BrowserTrace(
+        [
+            {"ready": True, "count": 0},
+            final(
+                userId="message-optimistic",
+                userHash="temporary",
+                requestMarker=marker,
+                replyAfterUser=False,
+                url="https://poe.com/GPT-6.1-Sol",
+            ),
+            stable,
+            stable,
+            stable,
+        ]
+    )
+    checkpoints = []
+    turn = BrowserTurn(structured=True, request_key=marker)
+    turn.on_progress = lambda: checkpoints.append((turn.user_id, turn.response_id))
+    assert collect(browser, turn) == ['{"type":"text","text":"OK"}']
+    assert turn.user_id == "message-user-server"
+    assert all(user != "message-optimistic" for user, _ in checkpoints)
+
+
+@pytest.mark.parametrize("mutation", [{}, {"userHash": "changed"}, {"replyId": "message-other"}])
+def test_recovery_only_reads_the_verified_request_and_reply(monkeypatch, mutation):
+    original_sleep = asyncio.sleep
+
+    async def tick(_):
+        await original_sleep(0)
+
+    monkeypatch.setattr("poe_web_proxy.browser.asyncio.sleep", tick)
+    marker = "a" * 64
+    state = {
+        **final(
+            ready=True,
+            userId="message-user",
+            userHash="original-hash",
+            requestMarker=marker,
+            replyAfterUser=True,
+        ),
+        **mutation,
+    }
+    browser = BrowserTrace([state])
+    turn = BrowserTurn(
+        chat_url="https://poe.com/chat/trace",
+        reply_id="message-before",
+        response_id="message-new",
+        user_id="message-user",
+        user_hash="original-hash",
+        request_key=marker,
+        structured=True,
+        recovering=True,
+        submitted=True,
+    )
+    if mutation:
+        with pytest.raises(BrowserError):
+            collect(browser, turn)
+    else:
+        assert collect(browser, turn) == ['{"type":"text","text":"OK"}']
+    assert browser.commands == [("open", "https://poe.com/chat/trace")]
 
 
 def test_terminal_text_must_settle_before_it_can_be_parsed(monkeypatch):

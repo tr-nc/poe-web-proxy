@@ -31,6 +31,7 @@ class Fake:
         self.calls = []
         self.failure: BrowserError | None = None
         self.submit = True
+        self.reads = 0
 
     async def start(self):
         pass
@@ -42,11 +43,21 @@ class Fake:
         pass
 
     async def generate(self, model, prompt, turn=None):
-        self.calls.append((prompt, turn.chat_url if turn else None, turn.images if turn else ()))
-        if turn:
-            turn.submitted = self.submit
-            turn.chat_url = turn.chat_url or "https://poe.com/chat/" + uuid.uuid4().hex
-            turn.reply_id = "message-" + uuid.uuid4().hex
+        if turn and turn.recovering:
+            self.reads += 1
+            turn.reply_id = turn.response_id
+        else:
+            self.calls.append(
+                (prompt, turn.chat_url if turn else None, turn.images if turn else ())
+            )
+            if turn:
+                turn.submitted = self.submit
+                turn.chat_url = turn.chat_url or "https://poe.com/chat/" + uuid.uuid4().hex
+                turn.reply_id = "message-" + uuid.uuid4().hex
+                turn.response_id = turn.reply_id
+                turn.user_id = "message-user-" + uuid.uuid4().hex
+                turn.user_hash = digest(prompt)
+                turn.checkpoint()
         if self.failure:
             raise self.failure
         yield json.dumps({"type": "text", "text": "ANSWER_" + str(len(self.calls))})
@@ -115,7 +126,15 @@ def test_divergence_model_switch_and_header_conflicts_fail_before_send(tmp_path)
     fake = Fake()
     with TestClient(create_app(fake, "test-key", (MODEL, "other-model"), store)) as client:
         first = request(client)
-        assert request(client).status_code == 409
+        assert (
+            request(client).status_code == 200
+        )  # A duplicate delivery is a read, not another send.
+        assert (
+            request(
+                client, {**BODY, "messages": [{"role": "user", "content": "diverged"}]}
+            ).status_code
+            == 409
+        )
         assert request(client, {**follow(BODY, first), "model": "other-model"}).status_code == 409
         assert request(client, headers={**AUTH, "session_id": "different"}).status_code == 400
         assert len(fake.calls) == 1
@@ -130,8 +149,9 @@ def test_failed_send_blocks_ambiguous_retries_but_allows_unsent_retry(tmp_path, 
         assert request(client).status_code == 502
         fake.failure = None
         retry = request(client)
-        assert retry.status_code == (409 if submitted else 200)
+        assert retry.status_code == 200
         assert len(fake.calls) == (1 if submitted else 2)
+        assert fake.reads == (1 if submitted else 0)
 
 
 def test_images_are_uploaded_only_on_the_turn_that_introduces_them(tmp_path):

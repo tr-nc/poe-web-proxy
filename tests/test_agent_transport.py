@@ -70,8 +70,11 @@ class RenderedBrowser(Browser):
                     "ready": True,
                     "count": 0,
                     "url": turn.chat_url,
-                    "replyId": turn.reply_id,
+                    "replyId": turn.response_id if turn.recovering else turn.reply_id,
                     "complete": True,
+                    "userId": turn.user_id,
+                    "userHash": turn.user_hash,
+                    "requestMarker": turn.request_key,
                 },
                 {"hasReply": True, "text": "partial rendered text", "complete": False},
                 {
@@ -79,8 +82,16 @@ class RenderedBrowser(Browser):
                     "text": self.text,
                     "agentText": self.source,
                     "complete": True,
-                    "replyId": f"message-{len(self.turns)}",
+                    "replyId": turn.response_id
+                    if turn.recovering
+                    else f"message-{len(self.turns)}",
                     "url": "https://poe.com/chat/test-format",
+                    "userId": turn.user_id
+                    if turn.recovering
+                    else f"message-user-{len(self.turns)}",
+                    "userHash": turn.user_hash if turn.recovering else f"hash-{len(self.turns)}",
+                    "requestMarker": turn.request_key,
+                    "replyAfterUser": True,
                 },
             ]
         )
@@ -173,8 +184,8 @@ def test_damaged_protocol_still_blocks_duplicate_send(tmp_path):
         first = client.post("/v1/agent/chat/completions", headers=headers, json=BODY)
         assert first.status_code == 502
         retry = client.post("/v1/agent/chat/completions", headers=headers, json=BODY)
-        assert retry.status_code == 409
-        assert len(browser.turns) == 1
+        assert retry.status_code == 502  # Re-reading damaged output never makes it executable.
+        assert len(browser.turns) == 2 and browser.turns[-1].recovering
         record = store.get(digest("bad-protocol"))
         assert record and record["status"] == "uncertain"
 

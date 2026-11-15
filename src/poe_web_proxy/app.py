@@ -3,6 +3,7 @@
 import asyncio
 import hmac
 import json
+import logging
 import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -81,12 +82,14 @@ def create_app(
         raise ValueError("A local API key and at least one model are required")
     busy = False
     healthy = True
+    held_request: str | None = None
     cleanup_tasks: set[asyncio.Task] = set()
 
-    async def release():
+    async def release(keep_page: bool = False):
         nonlocal busy, healthy
         try:
-            await asyncio.wait_for(transport.reset(), timeout=40)
+            if not keep_page:
+                await asyncio.wait_for(transport.reset(), timeout=40)
         except Exception:  # noqa: BLE001 — every cleanup failure must quarantine this session.
             # Do not let a potentially still-running browser contaminate another request.
             healthy = False
@@ -180,6 +183,12 @@ def create_app(
             return error("Model is not configured", 404, "not_found_error")
         if not healthy:
             return error("Browser cleanup failed; restart the service", 503, "service_unavailable")
+        if held_request and (turn is None or turn.request_key != held_request):
+            return error(
+                "Browser is retaining an unfinished send; retry that exact session request first",
+                429,
+                "rate_limit_error",
+            )
         # No await between inspection and reservation: one owner on the event loop.
         if busy:
             return error(
@@ -210,10 +219,15 @@ def create_app(
         cleanup_task: asyncio.Task | None = None
 
         async def cleanup():
-            nonlocal cleanup_task
-            # A request owns exactly one cleanup, including early disconnects.
+            nonlocal cleanup_task, held_request
+            # Keep an unfinished paid generation open. Only its exact owner may
+            # reacquire this browser; another session must not cancel it by navigating.
             if cleanup_task is None:
-                cleanup_task = asyncio.create_task(release())
+                keep_page = bool(
+                    turn and turn.request_key and turn.submitted and not turn.reply_received
+                )
+                held_request = turn.request_key if keep_page and turn else None
+                cleanup_task = asyncio.create_task(release(keep_page))
                 cleanup_tasks.add(cleanup_task)
                 cleanup_task.add_done_callback(cleanup_tasks.discard)
             with suppress(asyncio.CancelledError):
@@ -236,6 +250,8 @@ def create_app(
                     async with aclosing(deltas()) as source:
                         async for delta in source:
                             yield "data: " + json.dumps(chunk({"content": delta})) + "\n\n"
+                    if turn:
+                        turn.reply_received = True
                     await cleanup()
                     yield "data: " + json.dumps(chunk({}, "stop")) + "\n\n"
                     yield "data: [DONE]\n\n"
@@ -254,6 +270,8 @@ def create_app(
                     if await request.is_disconnected():
                         raise BrowserError("Client disconnected")
                     pieces.append(delta)
+            if turn:
+                turn.reply_received = True
             return {
                 "id": identifier,
                 "object": "chat.completion",
@@ -268,7 +286,17 @@ def create_app(
                 ],
             }
         except TimeoutError:
-            return error("Poe generation timed out", 504, "timeout_error")
+            logging.getLogger(__name__).warning(
+                "Poe turn timed out: submitted=%s, recoverable=%s",
+                bool(turn and turn.submitted),
+                bool(turn and turn.request_key and turn.chat_url),
+            )
+            message = "Poe generation timed out"
+            if turn and turn.request_key and turn.submitted and turn.chat_url:
+                message += (
+                    "; retry the identical request to read the existing send without resending"
+                )
+            return error(message, 504, "timeout_error")
         except BrowserError as exc:
             return error(str(exc), 502, "upstream_error")
         finally:

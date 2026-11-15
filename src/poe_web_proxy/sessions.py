@@ -74,6 +74,8 @@ def session_id(headers) -> str | None:
 
 
 class AgentTurn:
+    """One transaction: send once, then only re-read that exact acknowledged request."""
+
     def __init__(self, body: AgentCompletion, identity: str | None, store: SessionStore | None):
         self.body = body
         self.store = store
@@ -91,19 +93,38 @@ class AgentTurn:
                 "choice": body.tool_choice,
             }
         )
+        self.request = digest(
+            {
+                "model": body.model,
+                "history": self.history,
+                "context": self.context,
+                "effort": body.reasoning_effort,
+            }
+        )
+        self.recovering = False
         if self.old:
-            if self.old["status"] != "ready":
-                raise SessionConflict(
-                    "Previous send is unacknowledged; start a new Pi session to avoid duplicate billing"
-                )
             if self.old["model"] != body.model:
+                raise SessionConflict("A Pi session is bound to one Poe model/chat")
+            if (
+                self.old.get("request") == self.request
+                and self.old.get("chat_url")
+                and (self.old["status"] == "ready" or self.old.get("submitted"))
+            ):
+                self.recovering = True
+            if self.old["status"] != "ready" and not self.recovering:
                 raise SessionConflict(
-                    "A Pi session is bound to one Poe model/chat; start a new session to switch models"
+                    "Previous send is unacknowledged; recovery needs the exact original "
+                    "request and verified chat evidence. Do not resend its history."
                 )
+        if self.recovering:
+            # No history, context, attachments, or effort are sent during recovery.
+            self.prompt = "[Read-only recovery: no input is sent to Poe]"
+            messages = []
+        elif self.old:
             previous = self.old["history"]
             if self.history[: len(previous)] != previous or len(self.history) <= len(previous):
                 raise SessionConflict(
-                    "History diverged or was compacted; start a new Pi session instead of replaying history"
+                    "History diverged or was compacted; refusing to replay history"
                 )
             delta = history[len(previous) :]
             changed = self.context != self.old["context"]
@@ -112,12 +133,29 @@ class AgentTurn:
         else:
             messages = body.messages
             self.prompt = body.prompt()
+        owner = digest({"session": self.key, "request": self.request}) if self.key else None
+        if owner and not self.recovering:
+            self.prompt += "\nPOE-PROXY-REQUEST:" + owner
+            if len(self.prompt) > 200000:
+                raise ValueError("Serialized agent prompt exceeds 200000 characters")
+        old = self.old or {}
         self.browser = BrowserTurn(
-            chat_url=self.old["chat_url"] if self.old else None,
-            reply_id=self.old["reply_id"] if self.old else None,
+            chat_url=old.get("chat_url"),
+            reply_id=old.get("base_reply_id")
+            if self.recovering and old["status"] == "ready"
+            else old.get("reply_id"),
             images=body.attachments(messages),
             reasoning_effort=body.reasoning_effort,
             structured=True,
+            request_key=owner,
+            recovering=self.recovering,
+            submitted=self.recovering,
+            user_id=old.get("user_id") if self.recovering else None,
+            user_hash=old.get("user_hash") if self.recovering else None,
+            base_user_id=old.get("base_user_id") if self.recovering else old.get("user_id"),
+            response_id=old.get("response_id") if self.recovering else None,
+            marker_required=old.get("marker_required", True) if self.recovering else True,
+            on_progress=self.checkpoint,
         )
         self.pending = None
         self.finished = False
@@ -127,21 +165,54 @@ class AgentTurn:
             pending = {
                 "status": "pending",
                 "model": self.body.model,
+                "request": self.request,
+                "history": self.history,
+                "context": self.context,
                 "chat_url": self.browser.chat_url,
                 "reply_id": self.browser.reply_id,
+                "base_user_id": self.browser.base_user_id,
+                "user_id": self.browser.user_id,
+                "user_hash": self.browser.user_hash,
+                "response_id": self.browser.response_id,
+                "submitted": self.browser.submitted,
+                "marker_required": self.browser.marker_required,
+                "previous": self.old.get("previous")
+                if self.recovering and self.old and self.old["status"] != "ready"
+                else self.old,
             }
             self.store.replace(self.key, self.old, pending)
             self.pending = pending
 
+    def checkpoint(self):
+        if self.store and self.key and self.pending is not None:
+            updated = {
+                **self.pending,
+                "chat_url": self.browser.chat_url,
+                "user_id": self.browser.user_id,
+                "user_hash": self.browser.user_hash,
+                "base_user_id": self.browser.base_user_id,
+                "response_id": self.browser.response_id,
+                "submitted": self.browser.submitted,
+            }
+            if updated != self.pending:
+                self.store.replace(self.key, self.pending, updated)
+                self.pending = updated
+
     def commit(self, reply: dict):
         if self.store and self.key:
+            if self.pending is None:
+                raise SessionConflict("Cannot acknowledge a turn without its reservation")
             if (
                 not self.browser.chat_url
                 or not re.fullmatch(r"https://poe\.com/chat/[A-Za-z0-9_-]+", self.browser.chat_url)
                 or not self.browser.reply_id
+                or not self.browser.user_id
             ):
-                raise SessionConflict(
-                    "Poe chat identity was not acknowledged; start a new Pi session"
+                raise SessionConflict("Poe request/reply identity was not acknowledged")
+            # Identical response delivery retries must not mint another executable call ID.
+            for index, call in enumerate(reply.get("tool_calls", [])):
+                call["id"] = (
+                    "call_" + digest({"owner": self.browser.request_key, "index": index})[:32]
                 )
             assistant = self.body.canonical([Message.model_validate(reply)])[0]
             record = {
@@ -151,16 +222,35 @@ class AgentTurn:
                 "reply_id": self.browser.reply_id,
                 "history": [*self.history, digest(assistant)],
                 "context": self.context,
+                "request": self.request,
+                "submitted": True,
+                "user_id": self.browser.user_id,
+                "user_hash": self.browser.user_hash,
+                "base_user_id": self.browser.base_user_id,
+                "base_reply_id": self.pending["reply_id"],
+                "response_id": self.browser.reply_id,
+                "marker_required": self.browser.marker_required,
             }
+            if (
+                self.recovering
+                and self.old is not None
+                and self.old["status"] == "ready"
+                and record["history"] != self.old["history"]
+            ):
+                raise SessionConflict(
+                    "Poe reply changed after delivery; refusing a different replay"
+                )
             self.store.replace(self.key, self.pending, record)
         self.finished = True
 
     def abort(self):
         if not self.finished and self.pending is not None and self.store and self.key:
-            replacement = (
-                {**self.pending, "status": "uncertain", "chat_url": self.browser.chat_url}
-                if self.browser.submitted
-                else self.old
-            )
+            self.checkpoint()
+            if self.recovering and self.old is not None and self.old["status"] == "ready":
+                replacement = self.old
+            else:
+                replacement = (
+                    {**self.pending, "status": "uncertain"} if self.browser.submitted else self.old
+                )
             self.store.replace(self.key, self.pending, replacement)
             self.pending = None

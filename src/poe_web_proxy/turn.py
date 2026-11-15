@@ -1,6 +1,7 @@
 """Mutable evidence for one browser send, shared with the session transaction owner."""
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Literal
 
 from .images import Attachment
@@ -18,3 +19,15 @@ class BrowserTurn:
     structured: bool = False
     plain_text: bool = False
     reply_received: bool = False
+    request_key: str | None = None
+    recovering: bool = False
+    user_id: str | None = None
+    user_hash: str | None = None
+    base_user_id: str | None = None
+    response_id: str | None = None
+    marker_required: bool = True
+    on_progress: Callable[[], None] | None = field(default=None, repr=False)
+
+    def checkpoint(self) -> None:
+        if self.on_progress:
+            self.on_progress()
