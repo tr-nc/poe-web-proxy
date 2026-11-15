@@ -29,6 +29,8 @@ class LivePage(Browser):
         self.sends = 0
         self.resets = 0
         self.disruptions = 0
+        self.prompts = []
+        self.answer = '{"type":"text","text":"Finished the original turn"}'
 
     async def start(self):
         pass
@@ -50,6 +52,7 @@ class LivePage(Browser):
                 self.cancelled = True
             self.url = args[1]
         elif args[0] == "fill":
+            self.prompts.append(args[2])
             self.marker = args[2].rsplit("POE-PROXY-REQUEST:", 1)[-1]
         elif args == ("press", "Enter"):
             self.sends += 1
@@ -67,15 +70,15 @@ class LivePage(Browser):
             if self.finish_after_reads == 0:
                 self.completed = True
         terminal = self.cancelled or self.completed
-        content = '{"type":"text","text":"Finished the original turn"}'
+        content = self.answer
         return {
             "url": CHAT,
             "ready": True,
-            "count": 2,
-            "userId": "message-user",
-            "userHash": "user-content-hash",
+            "count": self.sends * 2,
+            "userId": "message-user" if self.sends == 1 else f"message-user-{self.sends}",
+            "userHash": "user-content-hash" if self.sends == 1 else f"hash-{self.sends}",
             "requestMarker": self.marker,
-            "replyId": "message-reply",
+            "replyId": "message-reply" if self.sends == 1 else f"message-reply-{self.sends}",
             "replyAfterUser": True,
             "hasReply": True,
             "complete": True,
@@ -153,9 +156,30 @@ def test_terminal_empty_reply_is_nonretryable_and_does_not_hold_the_browser(
         assert response.headers["x-should-retry"] == "false"
         assert transport.sends == 1 and transport.resets == 1
         pending = store.get(digest("active-recovery"))
-        assert pending and pending["status"] == "uncertain"
+        assert pending and pending["status"] == "failed"
+        assert pending["generation_finished"] and pending["response_id"] == "message-reply"
         assert "private coding task" not in store.path.read_bytes().decode(errors="ignore")
         retry = client.post("/v1/agent/chat/completions", headers=AUTH, json=BODY)
         assert retry.status_code == 409
         assert retry.json()["error"]["code"] == "upstream_incomplete_reply"
         assert transport.sends == 1
+
+
+def test_terminal_failure_accepts_only_new_input_in_the_same_chat(tmp_path, fast_poll, monkeypatch):
+    monkeypatch.setattr("poe_web_proxy.browser.EMPTY_REPLY_GRACE", 0)
+    transport = LivePage(empty=True)
+    transport.timeout = 1
+    store = SessionStore(tmp_path / "bindings.sqlite3")
+    with TestClient(create_app(transport, "local-key", (MODEL,), store)) as client:
+        first = client.post("/v1/agent/chat/completions", headers=AUTH, json=BODY)
+        assert first.status_code == 409
+        assert first.json()["error"]["code"] == "upstream_incomplete_reply"
+        transport.finish_after_reads = 5
+        following = {**BODY, "messages": [*BODY["messages"], {"role": "user", "content": "continue"}]}
+        second = client.post("/v1/agent/chat/completions", headers=AUTH, json=following)
+        assert second.status_code == 200, second.text
+        assert transport.sends == 2
+        assert "continue" in transport.prompts[-1]
+        assert "private coding task" not in transport.prompts[-1]
+        binding = store.get(digest("active-recovery"))
+        assert binding and binding["chat_url"] == CHAT

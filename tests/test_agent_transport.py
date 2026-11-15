@@ -72,9 +72,9 @@ class RenderedBrowser(Browser):
                     "url": turn.chat_url,
                     "replyId": turn.response_id if turn.recovering else turn.reply_id,
                     "complete": True,
-                    "userId": turn.user_id,
-                    "userHash": turn.user_hash,
-                    "requestMarker": turn.request_key,
+                    "userId": turn.user_id if turn.recovering else turn.base_user_id,
+                    "userHash": turn.user_hash if turn.recovering else turn.base_user_hash,
+                    "requestMarker": turn.request_key if turn.recovering else turn.base_marker,
                 },
                 {"hasReply": True, "text": "partial rendered text", "complete": False},
                 {
@@ -185,9 +185,10 @@ def test_damaged_protocol_still_blocks_duplicate_send(tmp_path):
         assert first.status_code == 502
         retry = client.post("/v1/agent/chat/completions", headers=headers, json=BODY)
         assert retry.status_code == 502  # Re-reading damaged output never makes it executable.
-        assert len(browser.turns) == 2 and browser.turns[-1].recovering
+        assert len(browser.turns) == 1  # Durable rejection; no browser read or new send.
+        assert retry.headers["x-should-retry"] == "false"
         record = store.get(digest("bad-protocol"))
-        assert record and record["status"] == "uncertain"
+        assert record and record["status"] == "failed"
 
 
 def test_required_tool_choice_rejects_plain_answer():

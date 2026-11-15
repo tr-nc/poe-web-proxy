@@ -19,7 +19,7 @@ from starlette.types import Receive, Scope, Send
 from .agent import AgentCompletion, ImagePart, Text
 from .browser import BrowserError, IncompleteReply
 from .images import checked_attachments
-from .sessions import AgentTurn, SessionConflict, SessionStore, session_id
+from .sessions import AgentTurn, SessionConflict, SessionStore, TerminalFailure, session_id
 from .turn import BrowserTurn, ReasoningEffort
 
 
@@ -174,7 +174,7 @@ def create_app(
         request: Request,
         authorized: bool,
         turn: BrowserTurn | None = None,
-        reserve: Callable[[], None] | None = None,
+        plan: AgentTurn | None = None,
     ):
         nonlocal busy
         if not authorized:
@@ -196,8 +196,8 @@ def create_app(
             )
         busy = True
         try:
-            if reserve:
-                reserve()
+            if plan:
+                plan.reserve()
         except SessionConflict as exc:
             busy = False
             return error(str(exc), 409, "session_conflict")
@@ -237,14 +237,43 @@ def create_app(
             with suppress(asyncio.CancelledError):
                 await asyncio.shield(cleanup_task)
 
-        def deltas():
-            prompt = body.messages[0].content
+        async def deltas():
+            nonlocal turn
+            if plan and plan.observing:
+                try:
+                    pieces = []
+                    async with aclosing(
+                        transport.generate(body.model, plan.prompt, turn)
+                    ) as source:
+                        async for delta in source:
+                            pieces.append(delta)
+                except IncompleteReply:
+                    plan.reject("upstream_incomplete_reply")
+                else:
+                    try:
+                        plan.body.reply("".join(pieces), plain_text=plan.browser.plain_text)
+                    except BrowserError:
+                        plan.reject("upstream_invalid_reply")
+                    else:
+                        raise SessionConflict(
+                            "The original reply is valid but delivery is unacknowledged. "
+                            "Retry the original request to recover it; do not discard possible "
+                            "tool calls. Explicit session rebuild is available if necessary."
+                        )
+                if not plan.finished:
+                    raise SessionConflict("Original generation termination was not confirmed")
+                plan.advance()
+                turn = plan.browser
+            prompt = plan.prompt if plan else body.messages[0].content
             assert isinstance(prompt, str)
-            return (
+            source = (
                 transport.generate(body.model, prompt, turn=turn)
                 if turn is not None
                 else transport.generate(body.model, prompt)
             )
+            async with aclosing(source):
+                async for delta in source:
+                    yield delta
 
         if body.stream:
 
@@ -291,6 +320,17 @@ def create_app(
                     pieces.append(delta)
             if turn:
                 turn.reply_received = True
+            message = {"role": "assistant", "content": "".join(pieces)}
+            finish = "stop"
+            if plan:
+                try:
+                    message, finish = plan.body.reply(
+                        "".join(pieces), plain_text=plan.browser.plain_text
+                    )
+                except BrowserError:
+                    plan.reject("upstream_invalid_reply")
+                    raise TerminalFailure("upstream_invalid_reply") from None
+                plan.commit(message)
             return {
                 "id": identifier,
                 "object": "chat.completion",
@@ -299,8 +339,8 @@ def create_app(
                 "choices": [
                     {
                         "index": 0,
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "".join(pieces)},
+                        "finish_reason": finish,
+                        "message": message,
                     }
                 ],
             }
@@ -317,14 +357,26 @@ def create_app(
                 )
             return error(message, 504, "timeout_error")
         except IncompleteReply as exc:
+            if plan:
+                plan.reject("upstream_incomplete_reply")
             response = error(str(exc), 409, "upstream_incomplete_reply")
             # OpenAI SDKs retry 409 by default; this is a terminal outcome, not a lock.
             response.headers["x-should-retry"] = "false"
             return response
+        except TerminalFailure as exc:
+            response = error(str(exc), exc.status, exc.code)
+            response.headers["x-should-retry"] = "false"
+            return response
+        except SessionConflict as exc:
+            return error(str(exc), 409, "session_conflict")
         except BrowserError as exc:
             return error(str(exc), 502, "upstream_error")
         finally:
-            await cleanup()
+            try:
+                if plan:
+                    plan.abort()
+            finally:
+                await cleanup()
 
     @app.post("/v1/agent/chat/completions")
     async def agent_complete(
@@ -345,24 +397,22 @@ def create_app(
                 request,
                 authorized,
                 plan.browser,
-                plan.reserve,
+                plan,
             )
             if not isinstance(result, dict):
                 return result
-            message, finish = body.reply(
-                result["choices"][0]["message"]["content"], plain_text=plan.browser.plain_text
-            )
-            plan.commit(message)
+            message = result["choices"][0]["message"]
+            finish = result["choices"][0]["finish_reason"]
+        except TerminalFailure as exc:
+            response = error(str(exc), exc.status, exc.code)
+            response.headers["x-should-retry"] = "false"
+            return response
         except ValueError as exc:
             return error(str(exc), 400, "invalid_request_error")
         except SessionConflict as exc:
             return error(str(exc), 409, "session_conflict")
         except BrowserError as exc:
             return error(str(exc), 502, "upstream_error")
-        finally:
-            if plan:
-                plan.abort()
-        result["choices"][0].update(message=message, finish_reason=finish)
         if not body.stream:
             return result
 

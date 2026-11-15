@@ -199,13 +199,15 @@ Bindings live in `~/Library/Application Support/poe-web-proxy/chats.sqlite3`
 on macOS, or the Linux data directory described above (0600): hashed session IDs, chat URLs, reply IDs, and transcript/context hashes;
 not full transcripts or image bytes. Do not edit the bound Poe chat manually.
 An externally changed chat, model switch, or branched/compacted transcript fails
-closed rather than silently replaying history. Start a **new Pi session** after
-compaction/divergence. An error before send can be retried safely. After a sent
-request fails, an **identical request** can only re-read its original chat: the
-proxy verifies the request marker, user-message identity/hash and reply identity,
-then validates the completed output again. It never re-sends the prompt, images,
-or tools. Response-delivery retries preserve tool-call IDs. Older bindings without
-this evidence remain blocked rather than being guessed safe.
+closed rather than silently replaying history. An error before send can be
+retried safely. An **identical request** after a timeout only re-reads its original
+chat: the proxy verifies the request marker, user-message identity/hash and reply
+identity, then validates the completed output again. It never re-sends the prompt,
+images, or tools. Response-delivery retries preserve tool-call IDs, but the proxy
+alone cannot guarantee exactly-once external tool effects. A valid original reply
+must be recovered and included in history before continuing; it is not silently
+discarded just because new input arrived. Older bindings without sufficient
+evidence remain blocked rather than being guessed safe.
 
 Generation is not complete merely because Poe sets `data-complete`: the Stop
 control must be absent and nonempty output must settle across observations.
@@ -215,15 +217,49 @@ the same URL can destroy its active stream. A timed-out bound request retains it
 browser page; other requests receive 429 while that generation is unresolved.
 If Poe's terminal reply controls are present and the reply remains empty after a
 hydration grace period, the result is `409 upstream_incomplete_reply` with
-`x-should-retry: false`, not another retryable 504. That releases the browser but
-preserves the uncertain session record; it does not invent an answer or authorize
-regeneration. Operator shutdown/restart still closes the browser;
-read recovery survives the restart only if Poe retained a completed reply.
+`x-should-retry: false`, not another retryable 504. A terminal invalid JSON/tool
+reply similarly returns `502 upstream_invalid_reply` without automatic retries.
+These failures release the browser and durably accept only the input, not an
+assistant answer. Append a new user message to continue in the same chat with only
+new input; identical failed requests return the recorded error without generating.
+No rejected tool call is forwarded. Context/schema and effort may change on that
+new turn. Before termination is known, user-only continuation with unchanged tool
+schema first observes the original request without navigating or sending; only a
+verified rejected result allows the new send. Observation failures retain the old
+evidence. This does not fix Poe's underlying empty-output generation or invent an
+answer. Operator shutdown/restart still closes the browser; read recovery survives
+the restart only if Poe retained the original reply.
 A legacy/empty-response repair is a separate, explicit operator checkpoint: it
 requires an observed terminal reply in the existing uncertain chat, forbids tools,
 and sends only a recovery note/context update. It is not an HTTP retry option.
 When attaching it to Pi, preserve existing entries and reload the session; never
 silently erase an uncertain send or mark an old coding task safe to replay.
+
+### Explicit fallback for an inaccessible/diverged chat
+
+Keep the local Pi session. Stop the service and make a private JSON agent request
+containing the retained history plus a final **reviewed user summary/new input**,
+with `tool_choice: "none"`. The summary must distinguish completed tools from
+unexecuted plans; rebuilding is not permission to repeat past tool effects.
+Inspect without modifying the binding or generating:
+
+```sh
+uv run poe-web-proxy rebuild --identity 'PI-SESSION-ID' --request /private/rebuild.json
+# After reviewing context loss, repeat with the printed revision hash:
+uv run poe-web-proxy rebuild --identity 'PI-SESSION-ID' --request /private/rebuild.json \
+  --expected 'REVISION-HASH' --accept-context-loss --service-stopped
+```
+
+The old hashed binding is archived atomically in the private database. No Pi file
+is edited and no generation occurs in the CLI. Restart the service, then send the
+**same reviewed request** through the normal HTTP endpoint: only its final user
+message and current system/tool context are sent to a new chat. Earlier transcript
+messages and image attachments are not replayed. The new chat loses un-summarized
+upstream context, may cost points, and cannot recover an unreceived old answer.
+Do not claim the local history is updated by changing the database alone; any
+controlled HTTP verification must be reconciled with the client's history before
+normal continuation. Use `rebuild --help` for options. Never clear a binding merely
+to make an unknown send look safe.
 
 Chat reuse does not prove prompt-cache hits or discounted billing. Poe usage and
 cache accounting are still not exposed by this adapter.

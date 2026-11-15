@@ -271,7 +271,13 @@ class Browser:
             # Staying on the same document matters: opening the same URL again
             # reloads it and can destroy the very stream this retry must observe.
         else:
-            await self.command("open", expected_url or f"https://poe.com/{model}")
+            if expected_url:
+                state = await self.state()
+                if state.get("generating"):
+                    raise BrowserError("A Poe chat is generating; refusing to navigate away")
+            if state is None or state.get("url") != expected_url:
+                await self.command("open", expected_url or f"https://poe.com/{model}")
+                state = None
         for _ in range(80):
             if state is None:
                 state = await self.state()
@@ -296,6 +302,9 @@ class Browser:
                 or state.get("replyId") != baseline
                 or not state.get("complete")
                 or state.get("generating")
+                or (turn.base_user_id and state.get("userId") != turn.base_user_id)
+                or (turn.base_user_hash and state.get("userHash") != turn.base_user_hash)
+                or (turn.base_marker and state.get("requestMarker") != turn.base_marker)
             ):
                 raise BrowserError(
                     "Poe chat changed externally; refusing to send into divergent history"
@@ -398,11 +407,12 @@ class Browser:
                         now = asyncio.get_running_loop().time()
                         if empty_since is not None and now - empty_since >= EMPTY_REPLY_GRACE:
                             turn.generation_finished = True
+                            turn.checkpoint()
                             raise IncompleteReply(
                                 "Poe marked this reply complete, but it has no answer text. "
                                 "Re-reading cannot produce an answer. No prompt or tool call "
-                                "was resent; history is preserved. Inspect the original chat "
-                                "before choosing an explicit new generation."
+                                "was resent; history is preserved. Append a new user message "
+                                "to continue with a new generation."
                             )
                         if empty_since is None:
                             empty_since = now
@@ -426,6 +436,7 @@ class Browser:
                         turn.reply_id = observed
                         turn.reply_received = True
                         turn.generation_finished = True
+                        turn.checkpoint()
                         yield source
                         return
                     text = state.get("text", "")
@@ -438,5 +449,6 @@ class Browser:
                         turn.reply_id = observed
                         turn.reply_received = True
                         turn.generation_finished = True
+                        turn.checkpoint()
                         return
                     await asyncio.sleep(0.3)

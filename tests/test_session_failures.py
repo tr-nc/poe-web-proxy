@@ -21,11 +21,16 @@ def test_failed_reservation_never_rolls_back_another_owner(tmp_path):
     second.abort()
     record = store.get(digest("same-session"))
     assert record and record["status"] == "pending"
-    # A process restart must not interpret an unacknowledged send as safe to replay.
-    with pytest.raises(SessionConflict, match="unacknowledged"):
-        AgentTurn(request, "same-session", SessionStore(store.path))
+    # A pre-Enter reservation has no effects; restart may prepare it again.
+    restarted = AgentTurn(request, "same-session", SessionStore(store.path))
+    assert not restarted.browser.submitted
     first.abort()  # no send happened, so this owner may release the reservation
     assert store.get(digest("same-session")) is None
+    # Missing legacy submitted evidence is NOT an explicit pre-Enter checkpoint.
+    legacy = {"status": "pending", "model": request.model}
+    store.replace(digest("same-session"), None, legacy)
+    with pytest.raises(SessionConflict, match="unacknowledged"):
+        AgentTurn(request, "same-session", store)
 
 
 def test_external_chat_changes_fail_before_sending():
@@ -51,6 +56,6 @@ def test_external_chat_changes_fail_before_sending():
             async for _ in browser.generate("Claude-Opus-5.5", "new message", turn):
                 pass
         assert not turn.submitted
-        assert commands == [("open", "https://poe.com/chat/known")]
+        assert commands == []  # Already on the same document; no need to reload it.
 
     asyncio.run(run())

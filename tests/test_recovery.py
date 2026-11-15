@@ -128,7 +128,7 @@ def test_failed_recovery_reservation_does_not_rollback_another_owner(tmp_path):
         second.reserve()
     second.abort()
     pending = store.get(digest("recover-me"))
-    assert pending and pending["status"] == "pending"
+    assert pending and pending["status"] == "uncertain"
     first.abort()
     restored = store.get(digest("recover-me"))
     assert restored and restored["status"] == "uncertain"

@@ -25,6 +25,8 @@ class BrowserTurn:
     user_id: str | None = None
     user_hash: str | None = None
     base_user_id: str | None = None
+    base_user_hash: str | None = None
+    base_marker: str | None = None
     response_id: str | None = None
     marker_required: bool = True
     on_progress: Callable[[], None] | None = field(default=None, repr=False)
