@@ -251,7 +251,11 @@ def create_app(
                     plan.reject("upstream_incomplete_reply")
                 else:
                     try:
-                        plan.body.reply("".join(pieces), plain_text=plan.browser.plain_text)
+                        plan.body.reply(
+                            "".join(pieces),
+                            plain_text=plan.browser.plain_text,
+                            commentary=plan.browser.commentary,
+                        )
                     except BrowserError:
                         plan.reject("upstream_invalid_reply")
                     else:
@@ -325,7 +329,9 @@ def create_app(
             if plan:
                 try:
                     message, finish = plan.body.reply(
-                        "".join(pieces), plain_text=plan.browser.plain_text
+                        "".join(pieces),
+                        plain_text=plan.browser.plain_text,
+                        commentary=plan.browser.commentary,
                     )
                 except BrowserError:
                     plan.reject("upstream_invalid_reply")

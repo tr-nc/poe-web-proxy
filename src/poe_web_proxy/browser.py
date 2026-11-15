@@ -52,6 +52,7 @@ READ_MESSAGE = r"""
   // Agent envelopes must come from a sole JSON code block, never rendered prose:
   // Markdown consumes JSON backslashes and interprets tool-code punctuation.
   let agentText = null;
+  let agentCommentary = '';
   if (selectable && reply?.getAttribute('data-complete') === 'true') {
     const content = selectable.cloneNode(true);
     content.querySelectorAll('[class*="MarkdownThinkingBlock_root__"]').forEach(e => e.remove());
@@ -61,7 +62,13 @@ READ_MESSAGE = r"""
     if (code?.classList.contains('language-json') && block) {
       const source = code.textContent;
       block.remove();
-      if (!content.textContent.trim()) agentText = source;
+      const commentary = content.textContent.trim();
+      // Ordinary prose is inert alongside a single envelope. A second apparent
+      // protocol object outside the block is ambiguous and remains rejected.
+      if (!/[{\[]|"(?:type|calls)"\s*:/.test(commentary)) {
+        agentText = source;
+        agentCommentary = commentary;
+      }
     }
   }
   const tuple = reply?.closest('[class*="ChatMessagesView_messageTuple__"]');
@@ -88,6 +95,7 @@ READ_MESSAGE = r"""
     count: messages.length,
     text,
     agentText,
+    agentCommentary,
     complete: reply?.getAttribute('data-complete') === 'true',
     hasReply: !!reply
   };
@@ -419,7 +427,7 @@ class Browser:
                     else:
                         empty_since = None
                     candidate = (
-                        (observed, source)
+                        (observed, source, state.get("agentCommentary", ""))
                         if state.get("complete")
                         and not state.get("generating")
                         and isinstance(source, str)
@@ -433,6 +441,7 @@ class Browser:
                             await asyncio.sleep(0.3)
                             continue
                         turn.plain_text = state.get("agentText") is None
+                        turn.commentary = state.get("agentCommentary", "")
                         turn.reply_id = observed
                         turn.reply_received = True
                         turn.generation_finished = True

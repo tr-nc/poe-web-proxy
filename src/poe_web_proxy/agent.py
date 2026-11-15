@@ -227,7 +227,9 @@ class AgentCompletion(Strict):
             )
         return prompt
 
-    def reply(self, text: str, *, plain_text: bool = False) -> tuple[dict, str]:
+    def reply(
+        self, text: str, *, plain_text: bool = False, commentary: str = ""
+    ) -> tuple[dict, str]:
         try:
             if plain_text:
                 # Prose is inert final output, never a source of executable calls.
@@ -249,7 +251,10 @@ class AgentCompletion(Strict):
                     raise ValueError
                 if not reply["text"].strip() or self.tool_choice == "required":
                     raise ValueError
-                return {"role": "assistant", "content": reply["text"]}, "stop"
+                return {
+                    "role": "assistant",
+                    "content": "\n\n".join(part for part in (commentary, reply["text"]) if part),
+                }, "stop"
             if reply.get("type") != "tool_calls" or set(reply) != {"type", "calls"}:
                 raise ValueError
             if (
@@ -276,7 +281,11 @@ class AgentCompletion(Strict):
                         },
                     }
                 )
-            return {"role": "assistant", "content": None, "tool_calls": calls}, "tool_calls"
+            return {
+                "role": "assistant",
+                "content": commentary or None,
+                "tool_calls": calls,
+            }, "tool_calls"
         except (ValueError, TypeError, KeyError, ValidationError):
             # Never forward unvalidated arguments or raw provider text as executable tool calls.
             raise BrowserError(

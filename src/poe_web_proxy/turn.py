@@ -18,6 +18,7 @@ class BrowserTurn:
     reasoning_effort: ReasoningEffort | None = None
     structured: bool = False
     plain_text: bool = False
+    commentary: str = ""
     reply_received: bool = False
     generation_finished: bool = False
     request_key: str | None = None

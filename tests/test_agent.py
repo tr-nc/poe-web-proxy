@@ -117,7 +117,7 @@ def test_bad_model_output_is_never_forwarded_as_tool_call(reply):
         response = client.post(
             "/v1/agent/chat/completions", headers=AUTH, json={**BODY, "stream": True}
         )
-    assert response.status_code == 502
+    assert response.status_code == 422
     assert "tool_calls" not in response.json()["error"]
 
 

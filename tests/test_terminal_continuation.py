@@ -57,10 +57,10 @@ def test_invalid_output_then_new_input(tmp_path, fast_poll, source, choice):
     body = {**BODY, "tools": TOOLS, "tool_choice": choice}
     with TestClient(create_app(page, "local-key", (MODEL,), store)) as client:
         failed = post(client, body)
-        assert failed.status_code == 502
+        assert failed.status_code == 422
         assert failed.headers["x-should-retry"] == "false"
         assert "choices" not in failed.json()
-        assert post(client, body).status_code == 502
+        assert post(client, body).status_code == 422
         assert page.sends == 1
         page.answer = '{"type":"text","text":"new answer"}'
         response = post(client, {**follow(body), "tool_choice": "none", "reasoning_effort": "high"})
@@ -91,10 +91,10 @@ def test_tool_result_is_not_replayed_after_following_turn_fails(tmp_path, fast_p
             ],
         }
         page.answer = "{broken"
-        assert post(client, second).status_code == 502
+        assert post(client, second).status_code == 422
         for _ in range(2):
             second = follow(second)
-            assert post(client, second).status_code == 502
+            assert post(client, second).status_code == 422
             assert "already executed private result" not in page.prompts[-1]
         page.answer = '{"type":"text","text":"ok"}'
         assert post(client, follow(second)).status_code == 200

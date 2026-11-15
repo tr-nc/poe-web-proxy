@@ -158,9 +158,10 @@ system/developer/user/assistant/tool history, inline images, and JSON-schema
 function tools. **Roles and tool calls are prompt-based emulation, not native
 Poe/OpenAI tool support**. Replies are buffered. Tool envelopes must arrive in
 one JSON code block and pass tool-name/argument validation; rendered Markdown
-is never interpreted as executable calls. Ordinary prose may be returned as an
-inert final answer unless a tool is required. Damaged or ambiguous protocol
-output still fails closed. Only a declared tool with valid arguments is
+is never interpreted as executable calls. Ordinary prose beside a single envelope
+is preserved as inert commentary; multiple code blocks or another apparent envelope
+outside it still fail closed. Ordinary prose may also be returned as an inert
+final answer unless a tool is required. Damaged protocol output still fails closed. Only a declared tool with valid arguments is
 forwarded, at most one per turn; the proxy never executes tools.
 The client (e.g. Pi) executes them under its own permissions. Treat this adapter
 as experimental, particularly for destructive or security-sensitive operations.
@@ -220,7 +221,9 @@ browser page; other requests receive 429 while that generation is unresolved.
 If Poe's terminal reply controls are present and the reply remains empty after a
 hydration grace period, the result is `409 upstream_incomplete_reply` with
 `x-should-retry: false`, not another retryable 504. A terminal invalid JSON/tool
-reply similarly returns `502 upstream_invalid_reply` without automatic retries.
+reply similarly returns `422 upstream_invalid_reply` with `x-should-retry: false`.
+The non-5xx status also prevents Pi's outer assistant-error retry loop, which
+cannot see SDK response headers, from retrying an immutable rejected result.
 These failures release the browser and durably accept only the input, not an
 assistant answer. Append a new user message to continue in the same chat with only
 new input; identical failed requests return the recorded error without generating.

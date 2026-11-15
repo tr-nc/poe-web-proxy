@@ -22,7 +22,9 @@ class TerminalFailure(Exception):
 
     def __init__(self, code: str):
         self.code = code
-        self.status = 409 if code == "upstream_incomplete_reply" else 502
+        # SDK headers do not survive Pi's assistant-error conversion. A 5xx
+        # status makes its outer layer retry an immutable rejected outcome.
+        self.status = 409 if code == "upstream_incomplete_reply" else 422
         super().__init__(
             "Poe finished without a deliverable answer; no tool call was forwarded. "
             "Append a new user message to continue; retrying this request will not regenerate."

@@ -48,6 +48,7 @@ class RenderedBrowser(Browser):
         self.text = text
         self.last_state = {}
         self.turns = []
+        self.commentary = ""
 
     async def start(self):
         pass
@@ -81,6 +82,7 @@ class RenderedBrowser(Browser):
                     "hasReply": True,
                     "text": self.text,
                     "agentText": self.source,
+                    "agentCommentary": self.commentary,
                     "complete": True,
                     "replyId": turn.response_id
                     if turn.recovering
@@ -101,6 +103,19 @@ class RenderedBrowser(Browser):
     async def state(self):
         self.last_state = next(self.states, self.last_state)
         return self.last_state
+
+
+def test_validated_tool_block_preserves_inert_commentary():
+    browser = RenderedBrowser(ENVELOPE)
+    browser.commentary = "GPU 实跑已通过，接下来检查实际渲染出的截图。"
+    with TestClient(create_app(browser, "test-key", (MODEL,))) as client:
+        response = client.post(
+            "/v1/agent/chat/completions", headers={"Authorization": "Bearer test-key"}, json=BODY
+        )
+    assert response.status_code == 200, response.text
+    message = response.json()["choices"][0]["message"]
+    assert message["content"] == browser.commentary
+    assert json.loads(message["tool_calls"][0]["function"]["arguments"]) == {"code": CODE}
 
 
 def test_stateless_agent_forwards_exact_code_not_rendered_text():
@@ -126,7 +141,7 @@ def test_missing_or_invalid_code_envelope_is_not_forwarded(source):
             headers={"Authorization": "Bearer test-key"},
             json=BODY,
         )
-    assert response.status_code == 502
+    assert response.status_code == 422
     assert "no tool call was forwarded" in response.json()["error"]["message"]
 
 
@@ -173,7 +188,7 @@ def test_damaged_protocol_never_falls_back_to_plain_answer(text):
             headers={"Authorization": "Bearer test-key"},
             json=BODY,
         )
-        assert response.status_code == 502
+        assert response.status_code == 422
 
 
 def test_damaged_protocol_still_blocks_duplicate_send(tmp_path):
@@ -182,9 +197,9 @@ def test_damaged_protocol_still_blocks_duplicate_send(tmp_path):
     headers = {"Authorization": "Bearer test-key", "x-session-affinity": "bad-protocol"}
     with TestClient(create_app(browser, "test-key", (MODEL,), store)) as client:
         first = client.post("/v1/agent/chat/completions", headers=headers, json=BODY)
-        assert first.status_code == 502
+        assert first.status_code == 422
         retry = client.post("/v1/agent/chat/completions", headers=headers, json=BODY)
-        assert retry.status_code == 502  # Re-reading damaged output never makes it executable.
+        assert retry.status_code == 422  # Re-reading damaged output never makes it executable.
         assert len(browser.turns) == 1  # Durable rejection; no browser read or new send.
         assert retry.headers["x-should-retry"] == "false"
         record = store.get(digest("bad-protocol"))
@@ -200,7 +215,7 @@ def test_required_tool_choice_rejects_plain_answer():
             headers={"Authorization": "Bearer test-key"},
             json={**BODY, "tool_choice": "required"},
         )
-        assert response.status_code == 502
+        assert response.status_code == 422
 
 
 def test_structured_flag_defaults_to_plain_chat():
@@ -236,8 +251,9 @@ def test_real_dom_preserves_agent_code_and_rejects_ambiguous_blocks(tmp_path):
         (code_block, ENVELOPE),
         (thinking + code_block, ENVELOPE),
         ('<p>{"code":"HEAD<del>1 HEAD</del>2; "pixel""}</p>', None),
-        ("<p>Commentary</p>" + code_block, None),
-        (code_block + "<p>Commentary</p>", None),
+        ("<p>Commentary</p>" + code_block, ENVELOPE),
+        (code_block + "<p>Commentary</p>", ENVELOPE),
+        ('<p>{"type":"text","text":"other envelope"}</p>' + code_block, None),
         (code_block + code_block, None),
         (code_block.replace("language-json", "language-python"), None),
     ]
@@ -256,6 +272,8 @@ def test_real_dom_preserves_agent_code_and_rejects_ambiguous_blocks(tmp_path):
                 await browser.command("open", page.as_uri())
                 state = await browser.state()
                 assert state["agentText"] == expected, index
+                if index in (3, 4):
+                    assert state["agentCommentary"] == "Commentary"
                 if expected:
                     arguments = json.loads(state["agentText"])["calls"][0]["arguments"]
                     assert arguments["code"] == CODE
