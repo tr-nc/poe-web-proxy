@@ -199,11 +199,13 @@ class AgentCompletion(Strict):
             )
             payload = {"transcript": transcript, "tools": tools}
         else:
-            instructions = (
-                "Continue the same client transcript. Use the previously declared tools and "
-                "JSON response protocol. Only new messages follow.\n"
+            instructions += (
+                "Continue the same client transcript. Only new messages follow; the tool "
+                "definitions below are the CURRENT client tools, not Poe-native tools. "
+                "Request these through the JSON envelope even if Poe's native environment "
+                "does not expose them; the client executes them.\n"
             )
-            payload = {"transcript": transcript, "tool_choice": self.tool_choice}
+            payload = {"transcript": transcript, "tools": tools, "tool_choice": self.tool_choice}
         # Repeat the complete envelope after new tool results on EVERY turn. A weak
         # reference to an earlier protocol drifts back into ordinary web-chat prose.
         # Poe auto-fetches URLs even inside serialized tool results, attaching whole

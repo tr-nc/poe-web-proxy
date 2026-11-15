@@ -70,6 +70,8 @@ def test_context_delta_and_tool_result_links_remain_exact_data():
     prompt = body.prompt(body.messages[-1:], context=False)
     assert "https://" not in prompt and "example.com" not in prompt
     assert payload(prompt)["transcript"] == body.canonical(body.messages[-1:])
+    assert payload(prompt)["tools"] == [TOOL["function"]]
+    assert "Do NOT use Poe's own tools" in prompt
     assert body.canonical()[2]["tool_calls"][0]["function"]["arguments"] == {
         "path": "https://example.com/file"
     }
