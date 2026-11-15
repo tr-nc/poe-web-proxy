@@ -126,6 +126,58 @@ captured requests stay outside Git. This demonstrates recovery and prevention of
 new automatic page attachments; it does not retroactively remove the old pages
 from Poe history or prove the provider's final-omission cause is fixed.
 
+## Supervised task continuation
+
+After the user exited the competing Pi process and explicitly requested supervision
+through completion, resumed the same session with normal project tools. The game
+UI task finished with a real final assistant message and local commit `a178653` in
+`conquer-sea-battle`. Its visual report is `docs/reports/pixel-ui/index.html`.
+No game commits were pushed. The session binding ended `ready`; all eight supervised
+Pi invocations exited. Prior tool results and failures remain in the session.
+
+Three more proxy defects were confirmed and fixed:
+
+- A single valid JSON tool envelope preceded by ordinary commentary was rejected
+  because the extractor required an otherwise empty wrapper. In the actual failed
+  reply the code block was valid and the residual 24 characters were model prose,
+  not UI. `d713a32` preserves inert commentary while accepting only a single JSON
+  block, still rejecting competing apparent envelopes and invalid tools/arguments.
+  Chromium extraction tests and HTTP delivery tests cover the boundary.
+- The same terminal rejection returned 502. Pi's outer retry classifier receives
+  only the assistant error string and retries 502 regardless of the SDK's
+  `x-should-retry: false` header. Terminal invalid protocol now returns 422. A real
+  installed-Pi classifier check showed old status retryable, new status not retryable;
+  SDK/HTTP tests also pass. Genuine browser/transport 5xx behavior is unchanged.
+- Long continuation later forgot client tools and claimed only a Poe-native web
+  search tool existed. The continuation prompt depended on earlier tool declarations.
+  `f675a74` sends the current client-tool definitions and ownership instructions on
+  every delta, without replaying old transcript messages. The next actual session
+  turn resumed client tool use. This reduces protocol drift; prompts cannot guarantee
+  arbitrary model adherence.
+
+Supervision also encountered genuine long-generation timeouts, which recovered by
+reading the existing page, and a browser-command/cleanup failure before send, which
+preserved the prior ready binding and required service/browser restart. The precise
+browser-runtime hang cause remains unknown; quarantine was not disabled. Local
+systemd now passes `--timeout 600` for coding output; raising this deadline is an
+operational adjustment, not a fix for thinking-only termination.
+
+Thinking-only failures **recurred** even after URL escaping and the longer timeout.
+Each confirmed failure was followed only by an explicit new input, not automatic
+replay. This disproves any claim that those fixes eliminate provider final-body
+omissions. Their underlying provider/Poe cause still lacks stop-reason evidence.
+
+The completed UI task passed real GPU-window acceptance on RTX 3060 Ti (desktop,
+compact, portrait), reported no script errors, and had UI/shop behavior checks.
+An incidental failing E-interaction test was traced to deliberate game input
+suspension after desktop focus loss. The final test acquires and checks actual
+window focus without changing game focus policy or deleting interaction assertions.
+The report's seven images loaded with no horizontal overflow at 1280 and 390 widths;
+Pi inspected the rendered narrow screenshot. Pre-existing sky/report changes and
+unrelated generated UID files remain outside the task commit; no cleanup removed
+them. One upstream OFL license whitespace warning was preserved in the game commit;
+it does not imply a game behavior failure.
+
 ## Remaining investigation and recovery constraints
 
 To claim a clean fix for upstream omissions, obtain a reproducible provider-level
