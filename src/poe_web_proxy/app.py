@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import Receive, Scope, Send
 
 from .agent import AgentCompletion, ImagePart, Text
-from .browser import BrowserError
+from .browser import BrowserError, IncompleteReply
 from .images import checked_attachments
 from .sessions import AgentTurn, SessionConflict, SessionStore, session_id
 from .turn import BrowserTurn, ReasoningEffort
@@ -224,7 +224,11 @@ def create_app(
             # reacquire this browser; another session must not cancel it by navigating.
             if cleanup_task is None:
                 keep_page = bool(
-                    turn and turn.request_key and turn.submitted and not turn.reply_received
+                    turn
+                    and turn.request_key
+                    and turn.submitted
+                    and not turn.reply_received
+                    and not turn.generation_finished
                 )
                 held_request = turn.request_key if keep_page and turn else None
                 cleanup_task = asyncio.create_task(release(keep_page))
@@ -255,6 +259,21 @@ def create_app(
                     await cleanup()
                     yield "data: " + json.dumps(chunk({}, "stop")) + "\n\n"
                     yield "data: [DONE]\n\n"
+                except IncompleteReply as exc:
+                    await cleanup()
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "error": {
+                                    "message": str(exc),
+                                    "type": "upstream_incomplete_reply",
+                                    "code": "upstream_incomplete_reply",
+                                }
+                            }
+                        )
+                        + "\n\n"
+                    )
                 except (BrowserError, TimeoutError):
                     await cleanup()
                     yield (
@@ -297,6 +316,11 @@ def create_app(
                     "; retry the identical request to read the existing send without resending"
                 )
             return error(message, 504, "timeout_error")
+        except IncompleteReply as exc:
+            response = error(str(exc), 409, "upstream_incomplete_reply")
+            # OpenAI SDKs retry 409 by default; this is a terminal outcome, not a lock.
+            response.headers["x-should-retry"] = "false"
+            return response
         except BrowserError as exc:
             return error(str(exc), 502, "upstream_error")
         finally:

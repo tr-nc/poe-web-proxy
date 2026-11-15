@@ -209,9 +209,15 @@ this evidence remain blocked rather than being guessed safe.
 
 Generation is not complete merely because Poe sets `data-complete`: the Stop
 control must be absent and nonempty output must settle across observations.
-Thinking-only output keeps waiting, not failing JSON validation. A timed-out
-bound request retains its browser page; other requests receive 429 until that
-exact request is recovered. Operator shutdown/restart still closes the browser;
+Thinking-only output keeps waiting while completion is unconfirmed, not failing
+JSON validation. Recovery reads an already-open chat in place: re-opening even
+the same URL can destroy its active stream. A timed-out bound request retains its
+browser page; other requests receive 429 while that generation is unresolved.
+If Poe's terminal reply controls are present and the reply remains empty after a
+hydration grace period, the result is `409 upstream_incomplete_reply` with
+`x-should-retry: false`, not another retryable 504. That releases the browser but
+preserves the uncertain session record; it does not invent an answer or authorize
+regeneration. Operator shutdown/restart still closes the browser;
 read recovery survives the restart only if Poe retained a completed reply.
 A legacy/empty-response repair is a separate, explicit operator checkpoint: it
 requires an observed terminal reply in the existing uncertain chat, forbids tools,
@@ -278,6 +284,7 @@ normal default model just to configure this provider.
 pi --provider poe-web --model Claude-Opus-5.5
 uv run python tests/live_pi_smoke.py # opt-in paid read-tool round trip
 uv run python tests/live_recovery_smoke.py # paid four-turn long-history/recovery test; restarts systemd
+uv run python tests/live_active_recovery_smoke.py # paid one-turn test; stop managed systemd service first
 uv run python tests/live_effort_smoke.py # opt-in paid five-level native effort check
 ```
 

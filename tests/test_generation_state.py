@@ -157,7 +157,59 @@ def test_recovery_only_reads_the_verified_request_and_reply(monkeypatch, mutatio
             collect(browser, turn)
     else:
         assert collect(browser, turn) == ['{"type":"text","text":"OK"}']
-    assert browser.commands == [("open", "https://poe.com/chat/trace")]
+    assert browser.commands == []  # Same-document recovery must never reload the live stream.
+
+
+def test_recovery_can_open_a_retained_reply_after_restart_but_not_another_active_chat(monkeypatch):
+    original_sleep = asyncio.sleep
+
+    async def tick(_):
+        await original_sleep(0)
+
+    monkeypatch.setattr("poe_web_proxy.browser.asyncio.sleep", tick)
+    turn = BrowserTurn(
+        chat_url="https://poe.com/chat/trace",
+        recovering=True,
+        structured=True,
+        reply_id="message-before",
+        response_id="message-new",
+    )
+    browser = BrowserTrace(
+        [
+            {"url": "about:blank"},
+            final(ready=True),
+            final(),
+            final(),
+        ]
+    )
+    assert collect(browser, turn) == ['{"type":"text","text":"OK"}']
+    assert browser.commands == [("open", turn.chat_url)]
+    other = BrowserTrace([{"url": "https://poe.com/chat/another", "generating": True}])
+    with pytest.raises(BrowserError, match="refusing to navigate"):
+        collect(other, turn)
+    assert other.commands == []
+
+
+def test_completion_controls_do_not_hide_active_generation_or_delayed_answer(monkeypatch):
+    original_sleep = asyncio.sleep
+
+    async def tick(_):
+        await original_sleep(0)
+
+    monkeypatch.setattr("poe_web_proxy.browser.asyncio.sleep", tick)
+    monkeypatch.setattr("poe_web_proxy.browser.EMPTY_REPLY_GRACE", 0)
+    empty = final(text="", agentText=None, hasCompletionControls=True)
+    browser = BrowserTrace(
+        [
+            {"ready": True, "count": 0},
+            empty,
+            {**empty, "generating": True},
+            empty,  # A new terminal-empty observation must not reuse the earlier timer.
+            final(hasCompletionControls=True),
+            final(hasCompletionControls=True),
+        ]
+    )
+    assert collect(browser, BrowserTurn(structured=True)) == ['{"type":"text","text":"OK"}']
 
 
 def test_terminal_text_must_settle_before_it_can_be_parsed(monkeypatch):

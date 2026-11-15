@@ -16,6 +16,13 @@ class BrowserError(Exception):
     pass
 
 
+class IncompleteReply(BrowserError):
+    """Poe has finished this reply, but there is no deliverable answer."""
+
+
+EMPTY_REPLY_GRACE = 3.0  # Let terminal controls/Markdown hydrate before classifying emptiness.
+
+
 # These selectors and data-complete were observed in the current Poe DOM, not
 # copied from a reverse-engineered library. Fail closed when the contract changes.
 READ_MESSAGE = r"""
@@ -57,6 +64,8 @@ READ_MESSAGE = r"""
       if (!content.textContent.trim()) agentText = source;
     }
   }
+  const tuple = reply?.closest('[class*="ChatMessagesView_messageTuple__"]');
+  const completionControls = tuple?.querySelectorAll('[class*="ChatMessageActionBar_actionBar__"] button') ?? [];
   const login = [...document.querySelectorAll('a,button')].some(e =>
     /^(Log in|Sign in|登录|登入)$/i.test(e.textContent.trim()));
   return {
@@ -68,6 +77,8 @@ READ_MESSAGE = r"""
     generating: [...document.querySelectorAll('button')].some(e =>
       /^(Stop message|Stop generating|停止生成|停止回答)$/i.test(e.getAttribute('aria-label') ?? '') && !e.disabled),
     thinking: thinking.length > 0,
+    hasCompletionControls: [...completionControls].some(e =>
+      /^(Retry|重试)$/i.test(e.getAttribute('aria-label') ?? '') && !e.disabled),
     url: location.href,
     replyId: reply?.id ?? null,
     attachments: document.querySelectorAll('[class*="ChatMessageInputAttachments_attachment__"]').length,
@@ -248,13 +259,27 @@ class Browser:
         expected_url, baseline = turn.chat_url, turn.reply_id
         if turn.recovering and not expected_url:
             raise BrowserError("Cannot locate the original Poe send; refusing to send again")
-        await self.command("open", expected_url or f"https://poe.com/{model}")
-        for _ in range(80):
+        state = None
+        if turn.recovering:
+            assert expected_url is not None
             state = await self.state()
+            if state.get("url") != expected_url:
+                if state.get("generating"):
+                    raise BrowserError("Another Poe chat is generating; refusing to navigate away")
+                await self.command("open", expected_url)
+                state = None
+            # Staying on the same document matters: opening the same URL again
+            # reloads it and can destroy the very stream this retry must observe.
+        else:
+            await self.command("open", expected_url or f"https://poe.com/{model}")
+        for _ in range(80):
+            if state is None:
+                state = await self.state()
             if state.get("login"):
                 raise BrowserError("Poe login required; authenticate the dedicated browser")
             if state.get("ready") and (not turn.recovering or self._matches_user(state, turn)):
                 break
+            state = None
             await asyncio.sleep(0.25)
         else:
             raise BrowserError(
@@ -316,6 +341,7 @@ class Browser:
                 previous = ""
                 terminal = None
                 identity = None
+                empty_since = None
                 while True:
                     state = await self.state()
                     if state.get("login"):
@@ -361,6 +387,27 @@ class Browser:
                     source = state.get("agentText") if turn.structured else state.get("text")
                     if source is None:
                         source = state.get("text", "")
+                    terminal_empty = (
+                        state.get("complete")
+                        and not state.get("generating")
+                        and state.get("hasCompletionControls")
+                        and isinstance(source, str)
+                        and not source.strip()
+                    )
+                    if terminal_empty:
+                        now = asyncio.get_running_loop().time()
+                        if empty_since is not None and now - empty_since >= EMPTY_REPLY_GRACE:
+                            turn.generation_finished = True
+                            raise IncompleteReply(
+                                "Poe marked this reply complete, but it has no answer text. "
+                                "Re-reading cannot produce an answer. No prompt or tool call "
+                                "was resent; history is preserved. Inspect the original chat "
+                                "before choosing an explicit new generation."
+                            )
+                        if empty_since is None:
+                            empty_since = now
+                    else:
+                        empty_since = None
                     candidate = (
                         (observed, source)
                         if state.get("complete")
@@ -378,6 +425,7 @@ class Browser:
                         turn.plain_text = state.get("agentText") is None
                         turn.reply_id = observed
                         turn.reply_received = True
+                        turn.generation_finished = True
                         yield source
                         return
                     text = state.get("text", "")
@@ -389,5 +437,6 @@ class Browser:
                     if settled:
                         turn.reply_id = observed
                         turn.reply_received = True
+                        turn.generation_finished = True
                         return
                     await asyncio.sleep(0.3)
