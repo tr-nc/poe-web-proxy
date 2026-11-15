@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from openai import ConflictError, OpenAI
 from test_active_recovery import AUTH, BODY, CHAT, MODEL, LivePage
 from test_active_recovery import fast_poll as fast_poll  # noqa: PLC0414 — pytest fixture export
 
@@ -284,6 +285,70 @@ def test_browser_remains_owned_across_observation_and_continuation(
             proceed.set()
             assert (await task).status_code == 409
             assert page.sends == 2 and page.disruptions == 0
+
+    asyncio.run(run())
+
+
+def test_real_sdk_does_not_automatically_retry_terminal_failure(tmp_path, fast_poll, monkeypatch):
+    monkeypatch.setattr("poe_web_proxy.browser.EMPTY_REPLY_GRACE", 0)
+    page = LivePage(empty=True)
+    store = SessionStore(tmp_path / "chats.sqlite3")
+    with TestClient(create_app(page, "local-key", (MODEL,), store)) as client:
+        sdk = OpenAI(api_key="local-key", base_url="http://testserver/v1/agent", http_client=client)
+        with pytest.raises(ConflictError):
+            sdk.chat.completions.create(
+                model=MODEL,
+                messages=BODY["messages"],
+                extra_headers={"x-session-affinity": "active-recovery"},
+            )
+        assert page.sends == 1
+        page.finish_after_reads = 1
+        reply = sdk.chat.completions.create(
+            model=MODEL,
+            messages=follow()["messages"],
+            extra_headers={"x-session-affinity": "active-recovery"},
+        )
+        assert reply.choices[0].message.content == "Finished the original turn"
+        assert page.sends == 2
+
+
+def test_cancelled_observation_keeps_original_request_and_live_page(tmp_path, fast_poll):
+    async def run():
+        page = LivePage()
+        store = SessionStore(tmp_path / "chats.sqlite3")
+        app = create_app(page, "local-key", (MODEL,), store)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+
+            async def send(body):
+                return await client.post("/v1/agent/chat/completions", headers=AUTH, json=body)
+
+            assert (await send(BODY)).status_code == 504
+            old = store.get(KEY)
+            entered = asyncio.Event()
+            state = page.state
+
+            async def blocked():
+                entered.set()
+                await asyncio.Future()
+                return await state()
+
+            page.state = blocked
+            task = asyncio.create_task(send(follow()))
+            await asyncio.wait_for(entered.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            current = store.get(KEY)
+            assert current and old
+            for key in ("request", "history", "response_id", "user_id", "user_hash"):
+                assert current[key] == old[key]
+            assert page.sends == 1 and page.resets == 0 and page.disruptions == 0
+            page.state = state
+            page.finish_after_reads = 1
+            assert (await send(BODY)).status_code == 200
+            assert page.sends == 1
 
     asyncio.run(run())
 
