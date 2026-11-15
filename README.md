@@ -53,6 +53,72 @@ Or use `OpenAI(api_key=os.environ["POE_PROXY_API_KEY"],
 base_url="http://127.0.0.1:8765/v1")` with `client.chat.completions.create(...)`.
 The client key is a **local proxy secret**, not a Poe API key or session cookie.
 
+## Linux (systemd user service)
+
+`login` needs a graphical desktop (or an X/Wayland display forwarded to you).
+Install Chromium with `agent-browser install`; if Linux shared libraries are
+missing, use `agent-browser install --with-deps` (may require administrator access).
+Complete `uv run poe-web-proxy login` before starting the headless service.
+
+The `service` subcommands and `poe-proxy` shortcut below are macOS-only. On Linux,
+run these commands from the checkout **after `uv sync`** to install a user unit:
+
+```sh
+install -d -m 700 "$HOME/.config/poe-web-proxy"
+# Create once; do not replace the client key on subsequent installs.
+uv run python - <<'PY'
+import os
+import secrets
+from pathlib import Path
+path = Path.home() / '.config/poe-web-proxy/service.env'
+if not path.exists():
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, 'w') as file:
+        file.write('POE_PROXY_API_KEY=' + secrets.token_hex(32) + '\n')
+path.chmod(0o600)
+PY
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/poe-web-proxy.service" <<EOF
+[Unit]
+Description=Local browser-backed Poe proxy
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$HOME
+EnvironmentFile=%h/.config/poe-web-proxy/service.env
+Environment="PATH=$(dirname "$(command -v agent-browser)"):/usr/local/bin:/usr/bin:/bin"
+ExecStart="$(pwd)/.venv/bin/poe-web-proxy" serve
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=90
+UMask=0077
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now poe-web-proxy
+systemctl --user status poe-web-proxy
+```
+
+This starts at user login, not system boot; no root service or public listener is
+created. The unit captures checkout/browser paths: regenerate it after moving
+the checkout or replacing the Node installation. Use `systemctl --user
+start|stop|restart poe-web-proxy` and `journalctl --user -u poe-web-proxy` for
+control/logs. Stop it before running `login` again. API readiness does not prove
+Poe authentication or model access.
+
+Linux chat bindings default to `~/.local/share/poe-web-proxy/chats.sqlite3`, or
+`$XDG_DATA_HOME/poe-web-proxy/chats.sqlite3` for an absolute XDG path. Existing
+bindings in the old `~/Library/Application Support/poe-web-proxy/` location
+continue to be used to avoid silently losing session affinity. The local API
+key is in the private `~/.config/poe-web-proxy/service.env` file; clients must
+read its `POE_PROXY_API_KEY` value. For the Pi configuration below, replace its
+macOS `apiKey` command with
+`!. "$HOME/.config/poe-web-proxy/service.env"; printf '%s' "$POE_PROXY_API_KEY"`.
+Do not publish this file or browser restore data.
+
 ## macOS login-time startup
 
 After login and `uv sync`, install the LaunchAgent once:
@@ -127,7 +193,7 @@ Pi restarts. Other OpenAI clients can use `x-session-affinity`, `session_id`, or
 `x-session-id` (values must agree). Without a header, requests remain stateless.
 
 Bindings live in `~/Library/Application Support/poe-web-proxy/chats.sqlite3`
-(0600): hashed session IDs, chat URLs, reply IDs, and transcript/context hashes;
+on macOS, or the Linux data directory described above (0600): hashed session IDs, chat URLs, reply IDs, and transcript/context hashes;
 not full transcripts or image bytes. Do not edit the bound Poe chat manually.
 An externally changed chat, model switch, branched/compacted transcript, or
 unacknowledged send fails closed rather than silently creating another chat or

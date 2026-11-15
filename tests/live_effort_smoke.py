@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from poe_web_proxy.browser import READ_MESSAGE
+from poe_web_proxy.paths import data_dir
 from poe_web_proxy.sessions import SessionStore, digest
 
 LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -82,9 +83,7 @@ def main():
         directory = Path(temporary)
         session = directory / "pi-session.jsonl"
         har = directory / "requests.har"
-        store = SessionStore(
-            Path.home() / "Library/Application Support/poe-web-proxy/chats.sqlite3"
-        )
+        store = SessionStore(data_dir() / "chats.sqlite3")
         chat_url = None
         browser("network", "har", "start")
         try:

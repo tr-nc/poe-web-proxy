@@ -12,6 +12,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from poe_web_proxy.paths import data_dir
 from poe_web_proxy.sessions import SessionStore, digest
 
 
@@ -60,9 +61,7 @@ def main():
 
         def binding():
             metadata = json.loads(session.read_text().splitlines()[0])
-            store = SessionStore(
-                Path.home() / "Library/Application Support/poe-web-proxy/chats.sqlite3"
-            )
+            store = SessionStore(data_dir() / "chats.sqlite3")
             record = store.get(digest(metadata["id"]))
             assert record and record["status"] == "ready"
             return record
