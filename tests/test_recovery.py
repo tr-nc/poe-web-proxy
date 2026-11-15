@@ -134,6 +134,67 @@ def test_failed_recovery_reservation_does_not_rollback_another_owner(tmp_path):
     assert restored and restored["status"] == "uncertain"
 
 
+def test_operator_repair_cannot_be_enabled_by_an_http_request(tmp_path):
+    store = SessionStore(tmp_path / "bindings.sqlite3")
+    transport = Interrupted()
+    with TestClient(create_app(transport, "test-key", (MODEL,), store)) as client:
+        response = request(client, {**BODY, "repair_reply_id": "message-any"})
+        assert response.status_code == 400
+        assert transport.sends == transport.reads == 0
+        assert store.get(digest("recover-me")) is None
+
+
+def test_operator_checkpoint_preserves_legacy_history_without_replaying_it(tmp_path):
+    store = SessionStore(tmp_path / "bindings.sqlite3")
+    legacy = {
+        "status": "uncertain",
+        "model": MODEL,
+        "chat_url": "https://poe.com/chat/legacy",
+        "reply_id": "message-before",
+    }
+    key = digest("legacy-session")
+    store.replace(key, None, legacy)
+    note = "Recovery checkpoint: summarize progress only; execute no tools."
+    body = AgentCompletion.model_validate(
+        {
+            **BODY,
+            "tool_choice": "none",
+            "messages": [*BODY["messages"], {"role": "user", "content": note}],
+        }
+    )
+    with pytest.raises(ValueError, match="tools-forbidden"):
+        AgentTurn(
+            body.model_copy(update={"tool_choice": "auto"}),
+            "legacy-session",
+            store,
+            repair_reply_id="message-empty",
+        )
+    plan = AgentTurn(body, "legacy-session", store, repair_reply_id="message-empty")
+    assert "private request" not in plan.prompt and note in plan.prompt
+    assert not plan.browser.recovering
+    assert plan.browser.chat_url == legacy["chat_url"]
+    assert plan.browser.reply_id == "message-empty"
+    plan.reserve()
+    plan.abort()  # An unsent operator checkpoint cannot erase the original lock.
+    assert store.get(key) == legacy
+    plan.reserve()
+    plan.browser.submitted = True
+    plan.browser.user_id = "message-checkpoint-user"
+    plan.browser.reply_id = plan.browser.response_id = "message-checkpoint-answer"
+    plan.browser.reply_received = True
+    answer = {"role": "assistant", "content": "Recovered checkpoint"}
+    plan.commit(answer)
+    follow = AgentCompletion.model_validate(
+        {
+            **BODY,
+            "messages": [*body.messages, answer, {"role": "user", "content": "next question"}],
+        }
+    )
+    continued = AgentTurn(follow, "legacy-session", store)
+    assert continued.browser.chat_url == legacy["chat_url"]
+    assert "private request" not in continued.prompt and "next question" in continued.prompt
+
+
 def test_recovered_tool_call_id_is_stable_across_response_delivery_retries(tmp_path):
     class Tool(Interrupted):
         async def generate(self, model, prompt, turn=None):

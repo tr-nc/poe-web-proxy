@@ -76,7 +76,14 @@ def session_id(headers) -> str | None:
 class AgentTurn:
     """One transaction: send once, then only re-read that exact acknowledged request."""
 
-    def __init__(self, body: AgentCompletion, identity: str | None, store: SessionStore | None):
+    def __init__(
+        self,
+        body: AgentCompletion,
+        identity: str | None,
+        store: SessionStore | None,
+        *,
+        repair_reply_id: str | None = None,
+    ):
         self.body = body
         self.store = store
         self.key = digest(identity) if identity else None
@@ -101,22 +108,42 @@ class AgentTurn:
                 "effort": body.reasoning_effort,
             }
         )
+        # Operator-only checkpoint: never exposed by the HTTP request schema.
+        # The browser must verify this observed terminal reply before sending a
+        # new, tools-forbidden recovery note in the SAME chat. No history replay.
+        repair = repair_reply_id is not None
+        if repair:
+            if not self.old or self.old["status"] != "uncertain" or not self.old.get("chat_url"):
+                raise SessionConflict("Repair requires an existing uncertain chat")
+            if (
+                body.tool_choice != "none"
+                or body.messages[-1].role != "user"
+                or not isinstance(body.messages[-1].content, str)
+                or not re.fullmatch(r"message-[A-Za-z0-9_-]+", repair_reply_id)
+            ):
+                raise ValueError(
+                    "Repair requires a tools-forbidden text checkpoint and observed reply ID"
+                )
         self.recovering = False
         if self.old:
             if self.old["model"] != body.model:
                 raise SessionConflict("A Pi session is bound to one Poe model/chat")
             if (
-                self.old.get("request") == self.request
+                not repair
+                and self.old.get("request") == self.request
                 and self.old.get("chat_url")
                 and (self.old["status"] == "ready" or self.old.get("submitted"))
             ):
                 self.recovering = True
-            if self.old["status"] != "ready" and not self.recovering:
+            if self.old["status"] != "ready" and not self.recovering and not repair:
                 raise SessionConflict(
                     "Previous send is unacknowledged; recovery needs the exact original "
                     "request and verified chat evidence. Do not resend its history."
                 )
-        if self.recovering:
+        if repair:
+            messages = [*context, body.messages[-1]]
+            self.prompt = body.prompt(messages, context=True)
+        elif self.recovering:
             # No history, context, attachments, or effort are sent during recovery.
             self.prompt = "[Read-only recovery: no input is sent to Poe]"
             messages = []
@@ -141,9 +168,13 @@ class AgentTurn:
         old = self.old or {}
         self.browser = BrowserTurn(
             chat_url=old.get("chat_url"),
-            reply_id=old.get("base_reply_id")
-            if self.recovering and old["status"] == "ready"
-            else old.get("reply_id"),
+            reply_id=repair_reply_id
+            if repair
+            else (
+                old.get("base_reply_id")
+                if self.recovering and old["status"] == "ready"
+                else old.get("reply_id")
+            ),
             images=body.attachments(messages),
             reasoning_effort=body.reasoning_effort,
             structured=True,
@@ -207,6 +238,8 @@ class AgentTurn:
                 or not re.fullmatch(r"https://poe\.com/chat/[A-Za-z0-9_-]+", self.browser.chat_url)
                 or not self.browser.reply_id
                 or not self.browser.user_id
+                or not self.browser.reply_received
+                or self.browser.response_id != self.browser.reply_id
             ):
                 raise SessionConflict("Poe request/reply identity was not acknowledged")
             # Identical response delivery retries must not mint another executable call ID.

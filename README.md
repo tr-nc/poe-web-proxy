@@ -213,6 +213,11 @@ Thinking-only output keeps waiting, not failing JSON validation. A timed-out
 bound request retains its browser page; other requests receive 429 until that
 exact request is recovered. Operator shutdown/restart still closes the browser;
 read recovery survives the restart only if Poe retained a completed reply.
+A legacy/empty-response repair is a separate, explicit operator checkpoint: it
+requires an observed terminal reply in the existing uncertain chat, forbids tools,
+and sends only a recovery note/context update. It is not an HTTP retry option.
+When attaching it to Pi, preserve existing entries and reload the session; never
+silently erase an uncertain send or mark an old coding task safe to replay.
 
 Chat reuse does not prove prompt-cache hits or discounted billing. Poe usage and
 cache accounting are still not exposed by this adapter.
