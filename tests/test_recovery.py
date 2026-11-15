@@ -170,7 +170,9 @@ def test_operator_checkpoint_preserves_legacy_history_without_replaying_it(tmp_p
             repair_reply_id="message-empty",
         )
     plan = AgentTurn(body, "legacy-session", store, repair_reply_id="message-empty")
-    assert "private request" not in plan.prompt and note in plan.prompt
+    payload = json.JSONDecoder().raw_decode(plan.prompt[plan.prompt.index('{"transcript"') :])[0]
+    assert "private request" not in plan.prompt
+    assert payload["transcript"][-1]["content"] == note
     assert not plan.browser.recovering
     assert plan.browser.chat_url == legacy["chat_url"]
     assert plan.browser.reply_id == "message-empty"

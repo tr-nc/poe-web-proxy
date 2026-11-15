@@ -59,6 +59,43 @@ current adapter can obtain final replies and continue in one chat; it cannot
 prove that thinking-only replies will not recur, nor did it restore the original
 Pi session. The original task and tool results were not replayed.
 
+## New incident: 2026-11-15T16:45:20.700Z
+
+A separate `conquer-sea-battle` session reproduced the terminal-empty error after
+successful tool turns. The service process had started before `22a2649` and was
+still running old code; a Git push had not deployed the fix. Its binding remained
+`uncertain` without generation-completion evidence. This explains stale recovery
+behavior, not why the provider omitted final output.
+
+Read-only Browser recovery verified this new request's marker, user ID/hash, and
+reply ID and reproduced `IncompleteReply`. The stored 853-character source again
+consists entirely of Thinking, with `state=complete`, job `completed`, no error
+text, and no final code block.
+
+A new confirmed transport defect was found in the same message: only two images
+were intentionally uploaded, but Poe automatically fetched eight reference URLs
+inside the serialized tool result as HTML attachments (including MB-sized Godot
+documentation). The user message has ten attachments. Poe's message Info UI shows
+384,786 input tokens, 913 output tokens, and 43,258 points ($1.31). These numbers
+are observed for this message, not a new token-accounting contract. The proxy's
+plain JSON serialization allowed data URLs to cause unsolicited page retrieval,
+context expansion, and extra cost.
+
+A controlled live A/B with the same public `example.com` reference and
+`tool_choice=none` established causality for URL auto-fetch: raw serialization
+created one HTML attachment; JSON string punctuation escapes created none, and
+both replies preserved the exact URL after decoding. The fix escapes dots and
+slashes only within serialized JSON strings; decimal numbers and decoded values
+remain unchanged. Tests use actual HTTP prompt serialization and exact JSON
+round-trip assertions. Transcript hashes remain based on decoded canonical data,
+so old bindings can still be recovered without rewriting their history.
+
+The A/B generated two short replies and executed no client tools. Both had final
+bodies: it proves the auto-fetch fix, **not** that unsolicited attachments caused
+the reasoning-only termination. The root cause of the latter remains unconfirmed
+without provider stop-reason evidence. No automatic replay, fallback answer, or
+Thinking-to-answer conversion is justified by this finding.
+
 ## Remaining investigation and recovery constraints
 
 To claim a clean fix for upstream omissions, obtain a reproducible provider-level

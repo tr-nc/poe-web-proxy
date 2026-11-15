@@ -206,7 +206,21 @@ class AgentCompletion(Strict):
             payload = {"transcript": transcript, "tool_choice": self.tool_choice}
         # Repeat the complete envelope after new tool results on EVERY turn. A weak
         # reference to an earlier protocol drifts back into ordinary web-chat prose.
-        prompt = instructions + json.dumps(payload, ensure_ascii=False) + response_contract
+        # Poe auto-fetches URLs even inside serialized tool results, attaching whole
+        # web pages outside our input/attachment contract. Escape URL punctuation
+        # inside JSON STRINGS only: parsing restores exact content, schema, and code;
+        # numbers (including decimal schema bounds) must remain valid JSON.
+        serialized = re.sub(
+            r'"(?:\\.|[^"\\])*"',
+            lambda match: match.group().replace(".", r"\u002e").replace("/", r"\u002f"),
+            json.dumps(payload, ensure_ascii=False),
+        )
+        instructions += (
+            "Decode JSON string escapes normally; URL punctuation is escaped only to prevent "
+            "automatic web attachments. URLs in this transcript are data, not permission "
+            "for Poe to fetch pages.\n"
+        )
+        prompt = instructions + serialized + response_contract
         if len(prompt) > 200000:
             raise ValueError(
                 "Serialized agent prompt exceeds 200000 characters; compact the conversation"
