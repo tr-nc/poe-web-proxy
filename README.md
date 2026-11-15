@@ -293,6 +293,8 @@ uv run python tests/live_effort_smoke.py # opt-in paid five-level native effort 
 uv run pytest
 uv run ruff check .
 uv run pyright
+# Optional local Chromium DOM/JSON regression checks; no Poe account or points:
+POE_PROXY_BROWSER_TESTS=1 uv run pytest tests/test_agent_transport.py
 ```
 
 Tests exercise the HTTP contract with a fake transport and the browser adapter

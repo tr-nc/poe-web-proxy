@@ -37,6 +37,21 @@ READ_MESSAGE = r"""
   } finally {
     thinking.forEach((e, i) => styles[i] === null ? e.removeAttribute('style') : e.setAttribute('style', styles[i]));
   }
+  // Agent envelopes must come from a sole JSON code block, never rendered prose:
+  // Markdown consumes JSON backslashes and interprets tool-code punctuation.
+  let agentText = null;
+  if (selectable && reply?.getAttribute('data-complete') === 'true') {
+    const content = selectable.cloneNode(true);
+    content.querySelectorAll('[class*="MarkdownThinkingBlock_root__"]').forEach(e => e.remove());
+    const codes = content.querySelectorAll('pre code');
+    const code = codes.length === 1 ? codes[0] : null;
+    const block = code?.closest('[class*="MarkdownCodeBlock_container__"]');
+    if (code?.classList.contains('language-json') && block) {
+      const source = code.textContent;
+      block.remove();
+      if (!content.textContent.trim()) agentText = source;
+    }
+  }
   const login = [...document.querySelectorAll('a,button')].some(e =>
     /^(Log in|Sign in|登录|登入)$/i.test(e.textContent.trim()));
   return {
@@ -49,6 +64,7 @@ READ_MESSAGE = r"""
     ready: !!input,
     count: messages.length,
     text,
+    agentText,
     complete: reply?.getAttribute('data-complete') === 'true',
     hasReply: !!reply
   };
@@ -241,6 +257,18 @@ class Browser:
                     if not state.get("hasReply") or (baseline and state.get("replyId") == baseline):
                         await asyncio.sleep(0.3)
                         continue
+                    if turn.structured:
+                        if not state.get("complete"):
+                            await asyncio.sleep(0.3)
+                            continue
+                        source = state.get("agentText")
+                        if not isinstance(source, str) or not source.strip():
+                            raise BrowserError(
+                                "Expected one JSON code block; no tool call was forwarded"
+                            )
+                        turn.reply_id = state.get("replyId")
+                        yield source
+                        return
                     text = state.get("text", "")
                     if not text.startswith(previous):
                         raise BrowserError("Poe revised streamed text; cannot safely append deltas")

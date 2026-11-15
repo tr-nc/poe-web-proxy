@@ -117,6 +117,7 @@ class AgentTurn:
             reply_id=self.old["reply_id"] if self.old else None,
             images=body.attachments(messages),
             reasoning_effort=body.reasoning_effort,
+            structured=True,
         )
         self.pending = None
         self.finished = False

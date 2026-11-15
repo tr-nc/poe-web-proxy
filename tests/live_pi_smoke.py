@@ -13,9 +13,14 @@ from pathlib import Path
 
 
 def main():
-    fd, path = tempfile.mkstemp(prefix="poe-pi-read-", suffix=".txt")
+    # Quotes and paired tildes expose lossy Markdown transport in tool arguments.
+    fd, path = tempfile.mkstemp(prefix='poe-pi-"quoted"-HEAD~1-HEAD~2-', suffix=".txt")
     os.fchmod(fd, 0o600)
-    marker = "PI_READ_VERIFIED_" + secrets.token_hex(6)
+    marker = (
+        "PI_READ_VERIFIED_"
+        + secrets.token_hex(6)
+        + '\n"quoted" HEAD~1 HEAD~2 **literal** `code` \\path'
+    )
     with os.fdopen(fd, "w") as file:
         file.write(marker + "\n")
     try:

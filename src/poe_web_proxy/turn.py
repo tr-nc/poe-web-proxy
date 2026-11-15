@@ -15,3 +15,4 @@ class BrowserTurn:
     images: tuple[Attachment, ...] = ()
     submitted: bool = False
     reasoning_effort: ReasoningEffort | None = None
+    structured: bool = False

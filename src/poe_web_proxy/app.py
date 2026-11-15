@@ -292,9 +292,7 @@ def create_app(
                 ),
                 request,
                 authorized,
-                plan.browser
-                if plan.key or plan.browser.images or plan.browser.reasoning_effort is not None
-                else None,
+                plan.browser,
                 plan.reserve,
             )
             if not isinstance(result, dict):

@@ -178,7 +178,9 @@ class AgentCompletion(Strict):
             "You cannot access the client's files yourself. To use a declared client tool, "
             "request it in the JSON response below; the client will execute it and send its result. "
             "Do NOT pretend you executed tools. Do NOT use Poe's own tools in place of client tools. "
-            "Return exactly ONE JSON object, with no markdown fences or commentary. "
+            "Return exactly ONE JSON object inside one fenced ```json code block, "
+            "with no text outside the block. The code block is required to preserve JSON "
+            "escapes and tool code through the web page\'s Markdown renderer. "
             'For a final answer use {"type":"text","text":"your answer"}. '
             'For tool use use {"type":"tool_calls","calls":[{"name":"declared_name",'
             '"arguments":{"parameter":"value"}}]}. '
@@ -195,7 +197,9 @@ class AgentCompletion(Strict):
         else:
             instructions = (
                 "Continue the same client transcript. Use the previously declared tools and "
-                "JSON response protocol. Only new messages follow.\n"
+                "JSON response protocol. Return one JSON object inside one fenced ```json "
+                "code block, with no text outside the block; this preserves tool code verbatim. "
+                "Only new messages follow.\n"
             )
             payload = {"transcript": transcript, "tool_choice": self.tool_choice}
         prompt = instructions + json.dumps(payload, ensure_ascii=False)
